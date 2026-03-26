@@ -1,0 +1,42 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.dll
+*.exe
+*.pdb
+*.nupkg
+*.snupkg
+
+## IDE
+.vs/
+.vscode/
+*.sln.docstates
+.idea/
+
+## OS
+Thumbs.db
+.DS_Store
+
+## Build
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+build/
+artifacts/
+
+## NuGet
+packages/
+*.nuget.props
+*.nuget.targets
+
+## Test Results
+TestResults/
+coverage/
+
+## XAPI files (obtain from Silicon Labs Gecko SDK)
+Xapi/*.xapi
+*.xapi

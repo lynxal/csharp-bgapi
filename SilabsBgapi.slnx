@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/examples/">
+    <Project Path="examples/BasicUsage/BasicUsage.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/SilabsBgapi/SilabsBgapi.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SilabsBgapi.Tests/SilabsBgapi.Tests.csproj" />
+  </Folder>
+</Solution>

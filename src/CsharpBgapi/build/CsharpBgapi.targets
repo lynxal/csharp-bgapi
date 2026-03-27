@@ -9,11 +9,11 @@
   </PropertyGroup>
 
   <ItemGroup Condition="'$(CsharpBgapiCopyXapi)' == 'true'">
-    <None Include="$(MSBuildThisFileDirectory)..\contentFiles\any\any\Xapi\sl_bt.xapi"
+    <None Include="$(MSBuildThisFileDirectory)..\xapi\sl_bt.xapi"
           Link="Xapi\sl_bt.xapi"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false" />
-    <None Include="$(MSBuildThisFileDirectory)..\contentFiles\any\any\Xapi\sl_btmesh.xapi"
+    <None Include="$(MSBuildThisFileDirectory)..\xapi\sl_btmesh.xapi"
           Link="Xapi\sl_btmesh.xapi"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false" />

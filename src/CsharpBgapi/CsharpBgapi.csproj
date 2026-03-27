@@ -43,10 +43,10 @@
     <EmbeddedResource Include="Xapi\*.xapi" />
   </ItemGroup>
 
-  <!-- Copy XAPI files to output for ProjectReference consumers; pack into NuGet contentFiles -->
+  <!-- Copy XAPI files to output for ProjectReference consumers -->
   <ItemGroup>
-    <Content Include="Xapi\sl_bt.xapi" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="contentFiles\any\any\Xapi\" />
-    <Content Include="Xapi\sl_btmesh.xapi" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="contentFiles\any\any\Xapi\" />
+    <Content Include="Xapi\sl_bt.xapi" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="xapi\" />
+    <Content Include="Xapi\sl_btmesh.xapi" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="xapi\" />
   </ItemGroup>
 
   <!-- Pack .targets into the NuGet package for PackageReference consumers -->

@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\SilabsBgapi\SilabsBgapi.csproj" />
+    <ProjectReference Include="..\..\src\CsharpBgapi\CsharpBgapi.csproj" />
   </ItemGroup>
 
 </Project>

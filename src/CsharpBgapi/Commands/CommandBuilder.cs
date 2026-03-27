@@ -1,6 +1,6 @@
-using SilabsBgapi.Protocol;
+using CsharpBgapi.Protocol;
 
-namespace SilabsBgapi.Commands;
+namespace CsharpBgapi.Commands;
 
 /// <summary>
 /// Helper for building BGAPI commands with a fluent API.

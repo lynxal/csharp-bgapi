@@ -1,6 +1,6 @@
 using System.Reflection;
 
-namespace SilabsBgapi.Protocol;
+namespace CsharpBgapi.Protocol;
 
 /// <summary>
 /// Provides access to XAPI definition files embedded as assembly resources.
@@ -14,8 +14,8 @@ internal static class EmbeddedXapiResources
     /// </summary>
     internal static IReadOnlyList<string> AllResourceNames { get; } =
     [
-        "SilabsBgapi.Xapi.sl_bt.xapi",
-        "SilabsBgapi.Xapi.sl_btmesh.xapi",
+        "CsharpBgapi.Xapi.sl_bt.xapi",
+        "CsharpBgapi.Xapi.sl_btmesh.xapi",
     ];
 
     /// <summary>

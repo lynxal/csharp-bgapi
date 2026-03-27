@@ -3,9 +3,9 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using SilabsBgapi.Protocol;
+using CsharpBgapi.Protocol;
 
-namespace SilabsBgapi.Events;
+namespace CsharpBgapi.Events;
 
 /// <summary>
 /// Event queue with selector-based waiting. Ports BGLibExt event waiting patterns.
@@ -13,7 +13,7 @@ namespace SilabsBgapi.Events;
 /// </summary>
 public sealed class BgapiEventQueue
 {
-    private readonly SilabsBgapiOptions _config;
+    private readonly CsharpBgapiOptions _config;
     private readonly ILogger _logger;
     private readonly ConcurrentQueue<BgapiMessage> _queue = new();
     private readonly SemaphoreSlim _signal = new(0, int.MaxValue);
@@ -21,12 +21,12 @@ public sealed class BgapiEventQueue
     public BgapiEventQueue() : this((ILogger?)null) { }
 
     public BgapiEventQueue(ILogger? logger)
-        : this(Options.Create(new SilabsBgapiOptions()), logger ?? NullLogger.Instance) { }
+        : this(Options.Create(new CsharpBgapiOptions()), logger ?? NullLogger.Instance) { }
 
-    public BgapiEventQueue(IOptions<SilabsBgapiOptions> options, ILogger<BgapiEventQueue> logger)
+    public BgapiEventQueue(IOptions<CsharpBgapiOptions> options, ILogger<BgapiEventQueue> logger)
         : this(options, (ILogger)logger) { }
 
-    internal BgapiEventQueue(IOptions<SilabsBgapiOptions> options, ILogger logger)
+    internal BgapiEventQueue(IOptions<CsharpBgapiOptions> options, ILogger logger)
     {
         _config = options.Value;
         _logger = logger;
@@ -430,9 +430,9 @@ public record RetryParams
     public TimeSpan RetryCmdInterval { get; init; } = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// Create RetryParams from SilabsBgapiOptions defaults.
+    /// Create RetryParams from CsharpBgapiOptions defaults.
     /// </summary>
-    public static RetryParams FromOptions(SilabsBgapiOptions options) => new()
+    public static RetryParams FromOptions(CsharpBgapiOptions options) => new()
     {
         RetryMax = options.RetryMax,
         RetryInterval = TimeSpan.FromSeconds(options.RetryIntervalSeconds),

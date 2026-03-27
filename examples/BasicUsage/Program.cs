@@ -1,4 +1,4 @@
-// Basic usage example for SilabsBgapi.
+// Basic usage example for CsharpBgapi.
 //
 // Prerequisites:
 //   - Silicon Labs NCP device connected via serial (e.g., EFR32 dev board)
@@ -7,7 +7,7 @@
 //   dotnet run -- <serial-port>                  (uses built-in XAPI defaults)
 //   dotnet run -- <serial-port> <xapi-path>      (uses custom XAPI file)
 
-using SilabsBgapi;
+using CsharpBgapi;
 
 if (args.Length < 1)
 {

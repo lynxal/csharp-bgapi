@@ -1,6 +1,6 @@
-using SilabsBgapi.Protocol;
+using CsharpBgapi.Protocol;
 
-namespace SilabsBgapi;
+namespace CsharpBgapi;
 
 /// <summary>
 /// Full response from a BGAPI command, including status code, all parameters, and raw message.

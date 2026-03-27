@@ -1,6 +1,6 @@
 using System.Buffers.Binary;
 
-namespace SilabsBgapi.Protocol;
+namespace CsharpBgapi.Protocol;
 
 /// <summary>
 /// BGAPI binary protocol header (4 bytes).

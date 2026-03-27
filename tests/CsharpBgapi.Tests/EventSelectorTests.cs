@@ -1,9 +1,9 @@
 using FluentAssertions;
-using SilabsBgapi.Events;
-using SilabsBgapi.Protocol;
+using CsharpBgapi.Events;
+using CsharpBgapi.Protocol;
 using Xunit;
 
-namespace SilabsBgapi.Tests;
+namespace CsharpBgapi.Tests;
 
 public class EventSelectorTests
 {

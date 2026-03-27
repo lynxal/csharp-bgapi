@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BgapiDevice.LoadDefaultXapis()` to load built-in XAPI definitions without external files
 - `XapiDefinitions.HasDefinitions` property to check if definitions are loaded
 - `XapiDefinitions.LoadedApiNames` property to list loaded API names
-- `loadDefaultXapis` parameter on `AddSilabsBgapi()` DI extension method
+- `loadDefaultXapis` parameter on `AddCsharpBgapi()` DI extension method
 
 ## [0.1.0] - 2026-03-26
 
@@ -28,8 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Event subscription via `Subscribe`/`Unsubscribe`
 - Fluent command builder (`CommandBuilder`)
 - Full Silicon Labs status code enum (`SlStatus`, 275+ codes)
-- Configurable options via `SilabsBgapiOptions` (13 tunable parameters)
-- DI registration via `AddSilabsBgapi()` extension method
+- Configurable options via `CsharpBgapiOptions` (13 tunable parameters)
+- DI registration via `AddCsharpBgapi()` extension method
 - Support for `IOptions<T>`, `ILogger<T>`, and `ILoggerFactory`
 - Multi-target: net9.0 and net10.0
 - SourceLink for debugger source stepping

@@ -1,7 +1,7 @@
 using FluentAssertions;
 using Xunit;
 
-namespace SilabsBgapi.Tests;
+namespace CsharpBgapi.Tests;
 
 public class SlStatusTests
 {

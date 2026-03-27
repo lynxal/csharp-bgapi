@@ -2,9 +2,9 @@ using System.IO.Ports;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using SilabsBgapi.Protocol;
+using CsharpBgapi.Protocol;
 
-namespace SilabsBgapi.Serial;
+namespace CsharpBgapi.Serial;
 
 /// <summary>
 /// Serial port connector for BGAPI communication.
@@ -12,7 +12,7 @@ namespace SilabsBgapi.Serial;
 /// </summary>
 public sealed class BgapiConnector : IDisposable
 {
-    private readonly SilabsBgapiOptions _config;
+    private readonly CsharpBgapiOptions _config;
     private SerialPort? _port;
     private readonly Lock _sendLock = new();
     private readonly Lock _receiveLock = new();
@@ -25,12 +25,12 @@ public sealed class BgapiConnector : IDisposable
     public BgapiConnector() : this((ILogger?)null) { }
 
     public BgapiConnector(ILogger? logger)
-        : this(Options.Create(new SilabsBgapiOptions()), logger ?? NullLogger.Instance) { }
+        : this(Options.Create(new CsharpBgapiOptions()), logger ?? NullLogger.Instance) { }
 
-    public BgapiConnector(IOptions<SilabsBgapiOptions> options, ILogger<BgapiConnector> logger)
+    public BgapiConnector(IOptions<CsharpBgapiOptions> options, ILogger<BgapiConnector> logger)
         : this(options, (ILogger)logger) { }
 
-    internal BgapiConnector(IOptions<SilabsBgapiOptions> options, ILogger logger)
+    internal BgapiConnector(IOptions<CsharpBgapiOptions> options, ILogger logger)
     {
         _config = options.Value;
         _logger = logger;

@@ -3,9 +3,9 @@
     <Project Path="examples/BasicUsage/BasicUsage.csproj" />
   </Folder>
   <Folder Name="/src/">
-    <Project Path="src/SilabsBgapi/SilabsBgapi.csproj" />
+    <Project Path="src/CsharpBgapi/CsharpBgapi.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/SilabsBgapi.Tests/SilabsBgapi.Tests.csproj" />
+    <Project Path="tests/CsharpBgapi.Tests/CsharpBgapi.Tests.csproj" />
   </Folder>
 </Solution>

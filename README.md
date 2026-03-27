@@ -1,7 +1,7 @@
-# SilabsBgapi
+# CsharpBgapi
 
-[![NuGet](https://img.shields.io/nuget/v/SilabsBgapi.svg)](https://www.nuget.org/packages/SilabsBgapi)
-[![Build](https://github.com/Lynxal/silabs-bgapi-csharp/actions/workflows/ci.yml/badge.svg)](https://github.com/Lynxal/silabs-bgapi-csharp/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/CsharpBgapi.svg)](https://www.nuget.org/packages/CsharpBgapi)
+[![Build](https://github.com/Lynxal/csharp-bgapi/actions/workflows/ci.yml/badge.svg)](https://github.com/Lynxal/csharp-bgapi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Full-featured C# library for Silicon Labs [BGAPI](https://docs.silabs.com/bluetooth/latest/bluetooth-stack-api/) serial communication with NCP (Network Co-Processor) devices. Provides command/response framing, event selectors with parameter matching, retry logic, and XAPI-driven protocol definitions for Bluetooth and Bluetooth Mesh.
@@ -31,7 +31,7 @@ BgapiDevice (main entry point)
 ## Installation
 
 ```shell
-dotnet add package SilabsBgapi
+dotnet add package CsharpBgapi
 ```
 
 ## XAPI Setup
@@ -64,7 +64,7 @@ device.LoadXapi("/path/to/sl_btmesh.xapi");
 ## Quick Start
 
 ```csharp
-using SilabsBgapi;
+using CsharpBgapi;
 
 var device = new BgapiDevice();
 device.LoadDefaultXapis();
@@ -78,7 +78,7 @@ device.Close();
 
 ## Configuration
 
-All tunable parameters are exposed via `SilabsBgapiOptions`:
+All tunable parameters are exposed via `CsharpBgapiOptions`:
 
 | Property | Default | Description |
 |----------|---------|-------------|
@@ -100,26 +100,26 @@ All tunable parameters are exposed via `SilabsBgapiOptions`:
 ### Basic
 
 ```csharp
-services.AddSilabsBgapi();
+services.AddCsharpBgapi();
 ```
 
 ### With Built-in XAPI Defaults
 
 ```csharp
-services.AddSilabsBgapi(loadDefaultXapis: true);
+services.AddCsharpBgapi(loadDefaultXapis: true);
 ```
 
 ### With Configuration Binding
 
 ```csharp
-services.Configure<SilabsBgapiOptions>(configuration.GetSection("SilabsBgapi"));
-services.AddSilabsBgapi();
+services.Configure<CsharpBgapiOptions>(configuration.GetSection("CsharpBgapi"));
+services.AddCsharpBgapi();
 ```
 
 ### With Inline Configuration
 
 ```csharp
-services.AddSilabsBgapi(options =>
+services.AddCsharpBgapi(options =>
 {
     options.ResponseTimeoutSeconds = 5.0;
     options.RetryMax = 10;
@@ -130,7 +130,7 @@ services.AddSilabsBgapi(options =>
 
 ```json
 {
-  "SilabsBgapi": {
+  "CsharpBgapi": {
     "DefaultBaudRate": 115200,
     "SerialReadTimeoutMs": 1000,
     "SerialWriteTimeoutMs": 1000,
@@ -185,8 +185,8 @@ device.Subscribe("evt_mesh_vendor_model_receive", message =>
 | `BgapiEventQueue` | Event queue with selector-based waiting and retry logic |
 | `XapiDefinitions` | XAPI XML definition loading and lookup |
 | `EventSelector` | Event matching criteria for WaitEvents |
-| `SilabsBgapiOptions` | Configuration POCO for all tunable parameters |
-| `SilabsBgapiServiceExtensions` | DI registration extension methods |
+| `CsharpBgapiOptions` | Configuration POCO for all tunable parameters |
+| `CsharpBgapiServiceExtensions` | DI registration extension methods |
 | `SlStatus` | Silicon Labs status/error code enum (275+ codes) |
 | `CommandBuilder` | Fluent command builder for constructing BGAPI commands |
 

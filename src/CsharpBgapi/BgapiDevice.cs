@@ -3,11 +3,11 @@ using System.IO.Ports;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using SilabsBgapi.Events;
-using SilabsBgapi.Protocol;
-using SilabsBgapi.Serial;
+using CsharpBgapi.Events;
+using CsharpBgapi.Protocol;
+using CsharpBgapi.Serial;
 
-namespace SilabsBgapi;
+namespace CsharpBgapi;
 
 /// <summary>
 /// High-level BGAPI device interface. Combines serial connector, protocol, and event queue.
@@ -15,7 +15,7 @@ namespace SilabsBgapi;
 /// </summary>
 public sealed class BgapiDevice : IDisposable
 {
-    private readonly SilabsBgapiOptions _config;
+    private readonly CsharpBgapiOptions _config;
     private readonly BgapiConnector _connector;
     private readonly BgapiProtocol _protocol;
     private readonly BgapiEventQueue _eventQueue;
@@ -44,7 +44,7 @@ public sealed class BgapiDevice : IDisposable
 
     public BgapiDevice(ILogger? logger)
     {
-        var options = Options.Create(new SilabsBgapiOptions());
+        var options = Options.Create(new CsharpBgapiOptions());
         _config = options.Value;
         _logger = logger ?? NullLogger.Instance;
         _definitions = new XapiDefinitions();
@@ -56,7 +56,7 @@ public sealed class BgapiDevice : IDisposable
         _stopReaderTimeout = TimeSpan.FromSeconds(_config.StopReaderTimeoutSeconds);
     }
 
-    public BgapiDevice(IOptions<SilabsBgapiOptions> options, ILoggerFactory loggerFactory)
+    public BgapiDevice(IOptions<CsharpBgapiOptions> options, ILoggerFactory loggerFactory)
     {
         _config = options.Value;
         _logger = loggerFactory.CreateLogger<BgapiDevice>();

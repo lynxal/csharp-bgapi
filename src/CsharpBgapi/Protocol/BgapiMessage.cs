@@ -1,4 +1,4 @@
-namespace SilabsBgapi.Protocol;
+namespace CsharpBgapi.Protocol;
 
 /// <summary>
 /// A decoded BGAPI message (command response or event) with its header and payload.

@@ -38,7 +38,7 @@ TestResults/
 coverage/
 
 ## XAPI files (allow bundled defaults, ignore others)
-!src/SilabsBgapi/Xapi/*.xapi
+!src/CsharpBgapi/Xapi/*.xapi
 
 ## Agent OS
 agent-os/

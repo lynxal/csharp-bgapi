@@ -1,13 +1,13 @@
 using Microsoft.Extensions.DependencyInjection;
 
-namespace SilabsBgapi;
+namespace CsharpBgapi;
 
-public static class SilabsBgapiServiceExtensions
+public static class CsharpBgapiServiceExtensions
 {
     /// <summary>
-    /// Registers SilabsBgapi services in the DI container.
-    /// Optionally configure <see cref="SilabsBgapiOptions"/> inline.
-    /// For config-file binding, use <c>services.Configure&lt;SilabsBgapiOptions&gt;(configuration.GetSection("SilabsBgapi"))</c>.
+    /// Registers CsharpBgapi services in the DI container.
+    /// Optionally configure <see cref="CsharpBgapiOptions"/> inline.
+    /// For config-file binding, use <c>services.Configure&lt;CsharpBgapiOptions&gt;(configuration.GetSection("CsharpBgapi"))</c>.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configure">Optional options configuration delegate.</param>
@@ -15,12 +15,12 @@ public static class SilabsBgapiServiceExtensions
     /// If true, the built-in XAPI definitions (Bluetooth and Bluetooth Mesh)
     /// are loaded after <see cref="BgapiDevice"/> construction. Default is false.
     /// </param>
-    public static IServiceCollection AddSilabsBgapi(
+    public static IServiceCollection AddCsharpBgapi(
         this IServiceCollection services,
-        Action<SilabsBgapiOptions>? configure = null,
+        Action<CsharpBgapiOptions>? configure = null,
         bool loadDefaultXapis = false)
     {
-        var builder = services.AddOptions<SilabsBgapiOptions>();
+        var builder = services.AddOptions<CsharpBgapiOptions>();
         if (configure is not null) builder.Configure(configure);
 
         if (loadDefaultXapis)

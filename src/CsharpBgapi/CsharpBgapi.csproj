@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <RootNamespace>SilabsBgapi</RootNamespace>
+    <RootNamespace>CsharpBgapi</RootNamespace>
     <AssemblyVersion>0.1.0</AssemblyVersion>
     <Version>$(AssemblyVersion)</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -9,13 +9,13 @@
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
 
     <!-- NuGet Package Metadata -->
-    <PackageId>SilabsBgapi</PackageId>
-    <Title>Silicon Labs BGAPI Library for .NET</Title>
+    <PackageId>CsharpBgapi</PackageId>
+    <Title>C# BGAPI Library for .NET</Title>
     <Description>Full-featured C# library for Silicon Labs BGAPI serial communication with NCP (Network Co-Processor) devices. Provides command/response framing, event selectors with parameter matching, retry logic, and XAPI-driven protocol definitions for Bluetooth and Bluetooth Mesh.</Description>
     <Authors>Lynxal</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/Lynxal/silabs-bgapi-csharp</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/Lynxal/silabs-bgapi-csharp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Lynxal/csharp-bgapi</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Lynxal/csharp-bgapi</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>silicon-labs;bgapi;bluetooth;ble;mesh;ncp;serial;iot;embedded;efr32</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

@@ -1,4 +1,4 @@
-# Contributing to SilabsBgapi
+# Contributing to CsharpBgapi
 
 Thank you for your interest in contributing! This guide explains how to get involved.
 
@@ -7,7 +7,7 @@ Thank you for your interest in contributing! This guide explains how to get invo
 Open an issue using the **Bug Report** template. Include:
 
 - .NET version and OS
-- SilabsBgapi package version
+- CsharpBgapi package version
 - NCP firmware version and hardware model
 - Steps to reproduce
 - Expected vs actual behavior
@@ -49,8 +49,8 @@ Open an issue using the **Feature Request** template. Describe the problem you'r
 ## Development Setup
 
 ```shell
-git clone https://github.com/Lynxal/silabs-bgapi-csharp.git
-cd silabs-bgapi-csharp
+git clone https://github.com/Lynxal/csharp-bgapi.git
+cd csharp-bgapi
 dotnet restore
 dotnet build
 dotnet test

@@ -1,6 +1,6 @@
-using SilabsBgapi.Protocol;
+using CsharpBgapi.Protocol;
 
-namespace SilabsBgapi.Events;
+namespace CsharpBgapi.Events;
 
 /// <summary>
 /// Event list with final event count tracking. Ports Python EventList.

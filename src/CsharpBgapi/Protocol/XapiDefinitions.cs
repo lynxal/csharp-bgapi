@@ -1,6 +1,6 @@
 using System.Xml.Linq;
 
-namespace SilabsBgapi.Protocol;
+namespace CsharpBgapi.Protocol;
 
 /// <summary>
 /// Parses and holds XAPI XML definitions for BGAPI command/event structures.

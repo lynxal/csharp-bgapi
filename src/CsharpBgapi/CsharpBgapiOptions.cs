@@ -1,10 +1,10 @@
-namespace SilabsBgapi;
+namespace CsharpBgapi;
 
 /// <summary>
-/// Configuration options for the SilabsBgapi library.
-/// Bind from appsettings.json section "SilabsBgapi" or configure via <c>services.Configure&lt;SilabsBgapiOptions&gt;()</c>.
+/// Configuration options for the CsharpBgapi library.
+/// Bind from appsettings.json section "CsharpBgapi" or configure via <c>services.Configure&lt;CsharpBgapiOptions&gt;()</c>.
 /// </summary>
-public sealed class SilabsBgapiOptions
+public sealed class CsharpBgapiOptions
 {
     /// <summary>Default baud rate for serial port communication.</summary>
     public int DefaultBaudRate { get; set; } = 115200;

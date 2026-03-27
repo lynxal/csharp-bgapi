@@ -1,4 +1,4 @@
-namespace SilabsBgapi;
+namespace CsharpBgapi;
 
 /// <summary>
 /// Silicon Labs status codes. Ported from bgapix/slstatus.py.

@@ -1,8 +1,8 @@
 using FluentAssertions;
-using SilabsBgapi.Protocol;
+using CsharpBgapi.Protocol;
 using Xunit;
 
-namespace SilabsBgapi.Tests;
+namespace CsharpBgapi.Tests;
 
 public class EmbeddedXapiTests
 {

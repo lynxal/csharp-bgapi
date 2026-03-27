@@ -14,7 +14,13 @@
       "Bash(git commit:*)",
       "Bash(git rm:*)",
       "Bash(git:*)",
-      "Bash(dotnet restore:*)"
+      "Bash(dotnet restore:*)",
+      "Bash(find /c/Users/Sipan/Documents/Work/Lynxal/silabs-bgapi-csharp -not -path */bin/* -not -path */obj/* -not -path */.git/* -not -path */.vs/* -not -path */node_modules/* -type d)",
+      "Bash(grep -r \"LoadXapi\\\\|LoadDefaultXapis\\\\|contentFiles\\\\|PackagePath\" /c/Users/Sipan/Documents/Work/Lynxal/silabs-bgapi-csharp --include=*.csproj --include=*.cs)",
+      "Bash(grep -r \"filesystem\\\\|fallback\\\\|File.Exists\\\\|Directory.Exists\\\\|path resolution\" /c/Users/Sipan/Documents/Work/Lynxal/silabs-bgapi-csharp/src --include=*.cs)",
+      "Bash(xargs ls:*)",
+      "Bash(dotnet pack:*)",
+      "Bash(unzip -l src/CsharpBgapi/bin/Release/CsharpBgapi.0.1.0.nupkg)"
     ]
   }
 }

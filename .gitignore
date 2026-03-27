@@ -39,3 +39,6 @@ coverage/
 
 ## XAPI files (allow bundled defaults, ignore others)
 !src/SilabsBgapi/Xapi/*.xapi
+
+## Agent OS
+agent-os/

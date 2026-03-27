@@ -8,13 +8,12 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -23,18 +22,53 @@ jobs:
             9.0.x
             10.0.x
 
+      - name: Compute version
+        id: version
+        run: |
+          if DESC=$(git describe --tags --match "v*" HEAD 2>/dev/null); then
+            if [[ "$DESC" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              VERSION="${BASH_REMATCH[1]}"
+            elif [[ "$DESC" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-g ]]; then
+              VERSION="${BASH_REMATCH[1]}-ci.${BASH_REMATCH[2]}"
+            else
+              echo "::error::Unexpected git describe output: $DESC"
+              exit 1
+            fi
+          else
+            BASE=$(grep -oP '(?<=<AssemblyVersion>)[^<]+' src/CsharpBgapi/CsharpBgapi.csproj)
+            COUNT=$(git rev-list --count HEAD)
+            VERSION="${BASE}-ci.${COUNT}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Computed version: $VERSION"
+
       - name: Restore dependencies
         run: dotnet restore
 
       - name: Build
-        run: dotnet build --no-restore --configuration Release
+        run: dotnet build --no-restore --configuration Release /p:Version=${{ steps.version.outputs.version }}
 
       - name: Test
-        run: dotnet test --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx"
+        run: dotnet test --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx" --collect:"XPlat Code Coverage" --results-directory ./TestResults
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results
           path: "**/TestResults/*.trx"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: "**/TestResults/**/coverage.cobertura.xml"
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Pack
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: dotnet pack src/CsharpBgapi/CsharpBgapi.csproj --no-build --configuration Release --output ./artifacts /p:Version=${{ steps.version.outputs.version }}
+
+      - name: Push to NuGet
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

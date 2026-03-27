@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `XapiDefinitions.LoadedApiNames` property to list loaded API names
 - `loadDefaultXapis` parameter on `AddCsharpBgapi()` DI extension method
 
+### Changed
+
+- **Breaking:** `AddCsharpBgapi()` now loads built-in XAPI definitions by default (`loadDefaultXapis` changed from `false` to `true`). Pass `loadDefaultXapis: false` to opt out.
+
 ## [0.1.0] - 2026-03-26
 
 ### Added

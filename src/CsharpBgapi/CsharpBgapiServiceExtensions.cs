@@ -13,12 +13,12 @@ public static class CsharpBgapiServiceExtensions
     /// <param name="configure">Optional options configuration delegate.</param>
     /// <param name="loadDefaultXapis">
     /// If true, the built-in XAPI definitions (Bluetooth and Bluetooth Mesh)
-    /// are loaded after <see cref="BgapiDevice"/> construction. Default is false.
+    /// are loaded after <see cref="BgapiDevice"/> construction. Default is true.
     /// </param>
     public static IServiceCollection AddCsharpBgapi(
         this IServiceCollection services,
         Action<CsharpBgapiOptions>? configure = null,
-        bool loadDefaultXapis = false)
+        bool loadDefaultXapis = true)
     {
         var builder = services.AddOptions<CsharpBgapiOptions>();
         if (configure is not null) builder.Configure(configure);

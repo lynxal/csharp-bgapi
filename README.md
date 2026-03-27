@@ -97,16 +97,16 @@ All tunable parameters are exposed via `CsharpBgapiOptions`:
 
 ## Dependency Injection
 
-### Basic
+### Basic (loads built-in XAPI definitions automatically)
 
 ```csharp
 services.AddCsharpBgapi();
 ```
 
-### With Built-in XAPI Defaults
+### Without Built-in XAPI Defaults
 
 ```csharp
-services.AddCsharpBgapi(loadDefaultXapis: true);
+services.AddCsharpBgapi(loadDefaultXapis: false);
 ```
 
 ### With Configuration Binding

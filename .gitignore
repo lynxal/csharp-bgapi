@@ -40,5 +40,9 @@ coverage/
 ## XAPI files (allow bundled defaults, ignore others)
 !src/CsharpBgapi/Xapi/*.xapi
 
+## MSBuild targets for NuGet package (override build/ ignore)
+!src/CsharpBgapi/build/
+!src/CsharpBgapi/build/*.targets
+
 ## Agent OS
 agent-os/

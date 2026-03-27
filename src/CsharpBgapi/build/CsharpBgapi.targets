@@ -1,0 +1,22 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!--
+    CsharpBgapi: Auto-copy XAPI definition files to consuming project output.
+    Set CsharpBgapiCopyXapi=false in your project to disable.
+  -->
+  <PropertyGroup>
+    <CsharpBgapiCopyXapi Condition="'$(CsharpBgapiCopyXapi)' == ''">true</CsharpBgapiCopyXapi>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(CsharpBgapiCopyXapi)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)..\contentFiles\any\any\Xapi\sl_bt.xapi"
+          Link="Xapi\sl_bt.xapi"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)..\contentFiles\any\any\Xapi\sl_btmesh.xapi"
+          Link="Xapi\sl_btmesh.xapi"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+
+</Project>

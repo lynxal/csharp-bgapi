@@ -1,0 +1,4 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Import the build targets for transitive package consumers -->
+  <Import Project="$(MSBuildThisFileDirectory)..\build\CsharpBgapi.targets" />
+</Project>

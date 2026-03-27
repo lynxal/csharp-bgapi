@@ -2,10 +2,11 @@
 
   <PropertyGroup>
     <RootNamespace>SilabsBgapi</RootNamespace>
-    <AssemblyVersion>1.0.0</AssemblyVersion>
+    <AssemblyVersion>0.1.0</AssemblyVersion>
     <Version>$(AssemblyVersion)</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>CS1591</NoWarn>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
 
     <!-- NuGet Package Metadata -->
     <PackageId>SilabsBgapi</PackageId>

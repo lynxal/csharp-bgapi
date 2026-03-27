@@ -26,7 +26,7 @@ BgapiDevice (main entry point)
 
 - **.NET 9.0** or later
 - **Silicon Labs NCP hardware** (e.g., EFR32 series with Bluetooth/Bluetooth Mesh firmware)
-- **Silicon Labs Gecko SDK** (for XAPI definition files -- see [XAPI Setup](#xapi-setup))
+- **Silicon Labs Gecko SDK** (optional -- only needed if you want custom XAPI files instead of the built-in defaults)
 
 ## Installation
 
@@ -36,17 +36,23 @@ dotnet add package SilabsBgapi
 
 ## XAPI Setup
 
-XAPI definition files describe the BGAPI protocol surface (commands, events, parameters). These files are part of the Silicon Labs Gecko SDK and are **not included** in this package due to licensing restrictions.
+XAPI definition files describe the BGAPI protocol surface (commands, events, parameters). This library includes built-in XAPI definitions for Bluetooth and Bluetooth Mesh (v10.1.1), so most users can get started immediately.
 
-### Obtaining XAPI Files
+### Using Built-in Defaults
+
+```csharp
+device.LoadDefaultXapis(); // Loads Bluetooth + Bluetooth Mesh definitions
+```
+
+### Using Custom XAPI Files
+
+If you need XAPI definitions from a different Gecko SDK version, you can load them manually:
 
 1. Install [Silicon Labs Gecko SDK](https://github.com/SiliconLabs/gecko_sdk) (via Simplicity Studio or standalone)
-2. Locate the XAPI files in your SDK installation:
+2. Locate the XAPI files:
    - **Bluetooth:** `<gecko_sdk>/protocol/bluetooth/api/sl_bt.xapi`
    - **Bluetooth Mesh:** `<gecko_sdk>/protocol/bluetooth/api/sl_btmesh.xapi`
-3. Copy them to your project or configure the path at runtime
-
-### Loading XAPI Files
+3. Load them at runtime:
 
 ```csharp
 device.LoadXapi("/path/to/sl_bt.xapi");
@@ -61,7 +67,7 @@ device.LoadXapi("/path/to/sl_btmesh.xapi");
 using SilabsBgapi;
 
 var device = new BgapiDevice();
-device.LoadXapi("sl_bt.xapi");
+device.LoadDefaultXapis();
 device.Open("/dev/ttyACM0"); // or "COM3" on Windows
 
 var response = await device.SendCommandAsync("bt", "system", "hello");
@@ -95,6 +101,12 @@ All tunable parameters are exposed via `SilabsBgapiOptions`:
 
 ```csharp
 services.AddSilabsBgapi();
+```
+
+### With Built-in XAPI Defaults
+
+```csharp
+services.AddSilabsBgapi(loadDefaultXapis: true);
 ```
 
 ### With Configuration Binding
@@ -186,4 +198,4 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 
 This project is licensed under the MIT License -- see [LICENSE](LICENSE) for details.
 
-**Note:** XAPI definition files (`sl_bt.xapi`, `sl_btmesh.xapi`) are Silicon Labs intellectual property under the [Gecko SDK MSLA](https://www.silabs.com/about-us/legal/master-software-license-agreement) and are not included in this repository or NuGet package. Obtain them separately from the [Gecko SDK](https://github.com/SiliconLabs/gecko_sdk).
+**Note:** The bundled XAPI definition files (`sl_bt.xapi`, `sl_btmesh.xapi`) originate from the Silicon Labs [Gecko SDK](https://github.com/SiliconLabs/gecko_sdk). See the Gecko SDK license for terms governing these files.

@@ -37,6 +37,5 @@ packages/
 TestResults/
 coverage/
 
-## XAPI files (obtain from Silicon Labs Gecko SDK)
-Xapi/*.xapi
-*.xapi
+## XAPI files (allow bundled defaults, ignore others)
+!src/SilabsBgapi/Xapi/*.xapi

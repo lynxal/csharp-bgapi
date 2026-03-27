@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Built-in XAPI definitions (Bluetooth 10.1.1, Bluetooth Mesh 10.1.1) embedded as assembly resources
+- `BgapiDevice.LoadDefaultXapis()` to load built-in XAPI definitions without external files
+- `XapiDefinitions.HasDefinitions` property to check if definitions are loaded
+- `XapiDefinitions.LoadedApiNames` property to list loaded API names
+- `loadDefaultXapis` parameter on `AddSilabsBgapi()` DI extension method
+
 ## [0.1.0] - 2026-03-26
 
 ### Added

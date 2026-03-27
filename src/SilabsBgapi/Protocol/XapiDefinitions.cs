@@ -9,6 +9,16 @@ public sealed class XapiDefinitions
 {
     private readonly Dictionary<string, ApiDefinition> _apis = new();
 
+    /// <summary>
+    /// Returns true if at least one XAPI definition has been loaded.
+    /// </summary>
+    public bool HasDefinitions => _apis.Count > 0;
+
+    /// <summary>
+    /// Returns the names of all loaded APIs (e.g., "bt", "btmesh").
+    /// </summary>
+    public IReadOnlyCollection<string> LoadedApiNames => _apis.Keys;
+
     public void LoadFromFile(string path)
     {
         var doc = XDocument.Load(path);

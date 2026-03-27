@@ -81,6 +81,21 @@ public sealed class BgapiDevice : IDisposable
         _connector.SetKnownDeviceIds(_definitions.GetKnownDeviceIds());
     }
 
+    /// <summary>
+    /// Loads the built-in default XAPI definitions (Bluetooth and Bluetooth Mesh)
+    /// that are embedded in the assembly. Call this instead of <see cref="LoadXapi"/>
+    /// when you don't have your own XAPI files.
+    /// </summary>
+    public void LoadDefaultXapis()
+    {
+        foreach (var resourceName in EmbeddedXapiResources.AllResourceNames)
+        {
+            using var stream = EmbeddedXapiResources.OpenResource(resourceName);
+            _definitions.LoadFromStream(stream);
+        }
+        _connector.SetKnownDeviceIds(_definitions.GetKnownDeviceIds());
+    }
+
     public void Open(string portName, int baudRate = 0, Handshake handshake = Handshake.None)
     {
         _logger.LogInformation("BgapiDevice opening on {PortName}", portName);

@@ -39,4 +39,8 @@
     <None Include="../../README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Xapi\*.xapi" />
+  </ItemGroup>
+
 </Project>

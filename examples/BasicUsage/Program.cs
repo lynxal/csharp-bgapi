@@ -2,32 +2,37 @@
 //
 // Prerequisites:
 //   - Silicon Labs NCP device connected via serial (e.g., EFR32 dev board)
-//   - XAPI definition files from your Gecko SDK installation:
-//       <gecko_sdk>/protocol/bluetooth/api/sl_bt.xapi
-//       <gecko_sdk>/protocol/bluetooth/api/sl_btmesh.xapi
 //
 // Usage:
-//   dotnet run -- <serial-port> <xapi-path>
-//   dotnet run -- /dev/ttyACM0 /opt/gecko_sdk/protocol/bluetooth/api/sl_bt.xapi
-//   dotnet run -- COM3 C:\SiliconLabs\gecko_sdk\protocol\bluetooth\api\sl_bt.xapi
+//   dotnet run -- <serial-port>                  (uses built-in XAPI defaults)
+//   dotnet run -- <serial-port> <xapi-path>      (uses custom XAPI file)
 
 using SilabsBgapi;
 
-if (args.Length < 2)
+if (args.Length < 1)
 {
-    Console.WriteLine("Usage: BasicUsage <serial-port> <xapi-file-path>");
-    Console.WriteLine("  Example: BasicUsage /dev/ttyACM0 /path/to/sl_bt.xapi");
+    Console.WriteLine("Usage: BasicUsage <serial-port> [xapi-file-path]");
+    Console.WriteLine("  Example: BasicUsage /dev/ttyACM0");
+    Console.WriteLine("  Example: BasicUsage COM3 C:\\path\\to\\sl_bt.xapi");
     return;
 }
 
 var portName = args[0];
-var xapiPath = args[1];
 
 using var device = new BgapiDevice();
 
-// Load the XAPI protocol definitions
-Console.WriteLine($"Loading XAPI from: {xapiPath}");
-device.LoadXapi(xapiPath);
+// Load XAPI protocol definitions
+if (args.Length >= 2)
+{
+    var xapiPath = args[1];
+    Console.WriteLine($"Loading custom XAPI from: {xapiPath}");
+    device.LoadXapi(xapiPath);
+}
+else
+{
+    Console.WriteLine("Loading built-in default XAPI definitions...");
+    device.LoadDefaultXapis();
+}
 
 // Open serial connection to the NCP device
 Console.WriteLine($"Opening serial port: {portName}");

@@ -1,12 +1,22 @@
-# CsharpBgapi
+# CsharpBgapi -- Silicon Labs BGAPI Library for C# / .NET
 
 [![NuGet](https://img.shields.io/nuget/v/CsharpBgapi.svg)](https://www.nuget.org/packages/CsharpBgapi)
 [![Build](https://github.com/Lynxal/csharp-bgapi/actions/workflows/ci.yml/badge.svg)](https://github.com/Lynxal/csharp-bgapi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Full-featured C# library for Silicon Labs [BGAPI](https://docs.silabs.com/bluetooth/latest/bluetooth-stack-api/) serial communication with NCP (Network Co-Processor) devices. Provides command/response framing, event selectors with parameter matching, retry logic, and XAPI-driven protocol definitions for Bluetooth and Bluetooth Mesh.
+**CsharpBgapi** is a C# / .NET library for the **Silicon Labs BGAPI** protocol, enabling serial communication with **EFR32 NCP** (Network Co-Processor) devices for **Bluetooth** and **Bluetooth Mesh** applications.
 
-Ported from the Python [BGLib/pyBGAPI](https://github.com/SiliconLabs/pybgapi) patterns, this is the first full-featured .NET BGAPI library.
+This is the only actively maintained .NET implementation of the **modern Silicon Labs BGAPI protocol** (EFR32 series, XAPI-driven -- not the legacy Bluegiga/BLED112 protocol). It provides command/response framing, event selectors with parameter matching, retry logic, and XAPI-driven protocol definitions.
+
+Ported from the official Python [pyBGAPI](https://github.com/SiliconLabs/pybgapi) library by Silicon Labs, CsharpBgapi brings the same capabilities to the .NET ecosystem.
+
+## Why CsharpBgapi?
+
+- **Modern BGAPI v3+** -- targets the current EFR32 NCP platform, not the discontinued Bluegiga/BLED112 hardware
+- **XAPI-driven** -- protocol definitions are loaded from Silicon Labs' own XML API files, so the library stays current with new firmware versions
+- **.NET 9.0+ / .NET 10.0+** -- built for modern .NET with dependency injection, async/await, and `IOptions<T>` configuration
+- **Production-ready** -- retry logic, event selectors, thread-safe serial I/O, and configurable timeouts
+- **Drop-in NuGet package** -- `dotnet add package CsharpBgapi` with built-in Bluetooth and Bluetooth Mesh XAPI definitions included
 
 ## Architecture
 

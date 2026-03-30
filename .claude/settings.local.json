@@ -20,7 +20,13 @@
       "Bash(grep -r \"filesystem\\\\|fallback\\\\|File.Exists\\\\|Directory.Exists\\\\|path resolution\" /c/Users/Sipan/Documents/Work/Lynxal/silabs-bgapi-csharp/src --include=*.cs)",
       "Bash(xargs ls:*)",
       "Bash(dotnet pack:*)",
-      "Bash(unzip -l src/CsharpBgapi/bin/Release/CsharpBgapi.0.1.0.nupkg)"
+      "Bash(unzip -l src/CsharpBgapi/bin/Release/CsharpBgapi.0.1.0.nupkg)",
+      "Bash(gh search:*)",
+      "WebSearch",
+      "WebFetch(domain:www.nuget.org)",
+      "WebFetch(domain:github.com)",
+      "Bash(gh repo:*)",
+      "Bash(gh auth:*)"
     ]
   }
 }

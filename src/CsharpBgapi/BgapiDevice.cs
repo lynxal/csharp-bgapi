@@ -25,7 +25,8 @@ public sealed class BgapiDevice : IDisposable
     private readonly TimeSpan _stopReaderTimeout;
     private readonly SemaphoreSlim _commandLock = new(1, 1);
     private readonly ConcurrentDictionary<string, List<Action<BgapiMessage>>> _eventHandlers = new();
-    private TaskCompletionSource<BgapiMessage>? _pendingResponse;
+    // volatile: written by the command thread, read by the reader thread
+    private volatile PendingCommand? _pendingCommand;
     private CancellationTokenSource? _readerCts;
     private Thread? _readerThread;
     private bool _disposed;
@@ -141,8 +142,7 @@ public sealed class BgapiDevice : IDisposable
             }
 
             // Set up response TCS before sending to avoid race
-            var tcs = new TaskCompletionSource<BgapiMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pendingResponse = tcs;
+            var tcs = InstallPendingCommand(BgapiHeader.Parse(data));
 
             try
             {
@@ -183,7 +183,7 @@ public sealed class BgapiDevice : IDisposable
             }
             finally
             {
-                _pendingResponse = null;
+                ClearPendingCommand();
             }
         }
         finally
@@ -412,17 +412,7 @@ public sealed class BgapiDevice : IDisposable
 
                     if (message.IsResponse)
                     {
-                        // Complete pending command response
-                        var tcs = _pendingResponse;
-                        if (tcs is not null)
-                        {
-                            _logger.LogDebug("Completing pending response TCS");
-                            tcs.TrySetResult(message);
-                        }
-                        else
-                        {
-                            _logger.LogDebug("Dropping response — no pending TCS");
-                        }
+                        HandleResponseMessage(message);
                     }
                     else
                     {
@@ -449,6 +439,51 @@ public sealed class BgapiDevice : IDisposable
             _logger.LogDebug("ReaderLoop exited");
         }
     }
+
+    /// <summary>
+    /// Routes a response message to the in-flight command, discarding responses whose
+    /// header identity does not match. Without the identity check, a late response from
+    /// a timed-out command A completes the TCS of the next command B with A's payload —
+    /// B then reports a wrong (often falsely successful) result.
+    /// </summary>
+    internal void HandleResponseMessage(BgapiMessage message)
+    {
+        var pending = _pendingCommand;
+        if (pending is null)
+        {
+            _logger.LogDebug("Dropping response — no pending TCS");
+            return;
+        }
+
+        if (message.DeviceId != pending.DeviceId ||
+            message.ClassIndex != pending.ClassIndex ||
+            message.CommandIndex != pending.CommandIndex)
+        {
+            _logger.LogWarning(
+                "Dropping stale response dev={Dev} cls={Cls} idx={Idx} — in-flight command is dev={PendingDev} cls={PendingCls} idx={PendingIdx}",
+                message.DeviceId, message.ClassIndex, message.CommandIndex,
+                pending.DeviceId, pending.ClassIndex, pending.CommandIndex);
+            return;
+        }
+
+        _logger.LogDebug("Completing pending response TCS");
+        pending.Tcs.TrySetResult(message);
+    }
+
+    internal TaskCompletionSource<BgapiMessage> InstallPendingCommand(in BgapiHeader commandHeader)
+    {
+        var tcs = new TaskCompletionSource<BgapiMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingCommand = new PendingCommand(tcs, commandHeader.DeviceId, commandHeader.ClassIndex, commandHeader.CommandIndex);
+        return tcs;
+    }
+
+    internal void ClearPendingCommand() => _pendingCommand = null;
+
+    private sealed record PendingCommand(
+        TaskCompletionSource<BgapiMessage> Tcs,
+        byte DeviceId,
+        byte ClassIndex,
+        byte CommandIndex);
 
     private void DispatchToHandlers(BgapiMessage message)
     {

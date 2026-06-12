@@ -13,11 +13,30 @@ public sealed record BgapiCommandResponse
 
     /// <summary>
     /// Gets a typed parameter value from the response. Returns default if not found.
+    /// Numeric values are widened/converted: decoded parameters carry their exact
+    /// xapi width (uint16 → ushort), so a strict type check would make
+    /// GetParameter&lt;int&gt;("address") silently return 0 for a ushort-decoded value.
     /// </summary>
     public T? GetParameter<T>(string name)
     {
-        if (Parameters is not null && Parameters.TryGetValue(name, out var value) && value is T typed)
+        if (Parameters is null || !Parameters.TryGetValue(name, out var value))
+            return default;
+
+        if (value is T typed)
             return typed;
+
+        if (value is IConvertible && !typeof(T).IsArray)
+        {
+            try
+            {
+                return (T)Convert.ChangeType(value, typeof(T));
+            }
+            catch (Exception ex) when (ex is InvalidCastException or FormatException or OverflowException)
+            {
+                return default;
+            }
+        }
+
         return default;
     }
 

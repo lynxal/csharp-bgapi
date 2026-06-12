@@ -101,7 +101,7 @@ public sealed class BgapiProtocol
         return ms.ToArray();
     }
 
-    private static Dictionary<string, object> DecodeParameters(IReadOnlyList<XapiParameter> paramDefs, ReadOnlySpan<byte> data)
+    internal static Dictionary<string, object> DecodeParameters(IReadOnlyList<XapiParameter> paramDefs, ReadOnlySpan<byte> data)
     {
         var result = new Dictionary<string, object>();
         int offset = 0;
@@ -109,7 +109,9 @@ public sealed class BgapiProtocol
         foreach (var paramDef in paramDefs)
         {
             if (offset >= data.Length) break;
-            var (value, bytesRead) = ReadValue(data[offset..], paramDef.ResolvedType, paramDef.Length);
+            var decoded = ReadValue(data[offset..], paramDef.ResolvedType, paramDef.Length);
+            if (decoded is null) break; // truncated payload — keep what decoded so far
+            var (value, bytesRead) = decoded.Value;
             result[paramDef.Name] = value;
             offset += bytesRead;
         }
@@ -207,8 +209,25 @@ public sealed class BgapiProtocol
         }
     }
 
-    private static (object value, int bytesRead) ReadValue(ReadOnlySpan<byte> data, string dataType, int length)
+    private static (object value, int bytesRead)? ReadValue(ReadOnlySpan<byte> data, string dataType, int length)
     {
+        // Truncated payloads (xapi/firmware mismatch, corrupt frame with a valid header)
+        // must not throw: an exception here drops the whole message in ReaderLoop and
+        // stalls the pending command until its timeout. Null means "stop decoding".
+        int required = dataType switch
+        {
+            "uint8" or "int8" => 1,
+            "uint16" or "errorcode" or "int16" or "sl_bt_uuid_16_t" => 2,
+            "uint32" or "int32" or "ipv4" => 4,
+            "uint64" or "int64" or "sl_bt_uuid_64_t" => 8,
+            "bd_addr" or "hw_addr" => 6,
+            "uuid_128" or "aes_key_128" => 16,
+            "uint8array" or "byte_array" => 1, // length prefix
+            "uint16array" => 2,                // length prefix
+            _ => Math.Max(length, 0)
+        };
+        if (data.Length < required) return null;
+
         switch (dataType)
         {
             case "uint8":
@@ -246,12 +265,14 @@ public sealed class BgapiProtocol
                 {
                     // Always variable-length: 1-byte length prefix + data
                     int len = data[0];
+                    if (data.Length < 1 + len) return null;
                     return (data.Slice(1, len).ToArray(), 1 + len);
                 }
             case "uint16array":
                 {
                     // 2-byte little-endian length prefix
                     int len = BinaryPrimitives.ReadUInt16LittleEndian(data);
+                    if (data.Length < 2 + len) return null;
                     return (data.Slice(2, len).ToArray(), 2 + len);
                 }
             default:

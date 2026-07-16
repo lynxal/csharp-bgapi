@@ -19,20 +19,22 @@ public sealed class XapiDefinitions
     /// </summary>
     public IReadOnlyCollection<string> LoadedApiNames => _apis.Keys;
 
-    public void LoadFromFile(string path)
+    public ApiDefinition LoadFromFile(string path)
     {
         var doc = XDocument.Load(path);
         var root = doc.Root ?? throw new InvalidOperationException("Empty XAPI file");
         var api = ParseApi(root);
         _apis[api.Name] = api;
+        return api;
     }
 
-    public void LoadFromStream(Stream stream)
+    public ApiDefinition LoadFromStream(Stream stream)
     {
         var doc = XDocument.Load(stream);
         var root = doc.Root ?? throw new InvalidOperationException("Empty XAPI file");
         var api = ParseApi(root);
         _apis[api.Name] = api;
+        return api;
     }
 
     public byte GetDeviceId(string apiName)
@@ -94,8 +96,11 @@ public sealed class XapiDefinitions
 
     private static ApiDefinition ParseApi(XElement root)
     {
-        var deviceId = byte.Parse(root.Attribute("device_id")?.Value ?? "0");
-        var deviceName = root.Attribute("device_name")?.Value ?? "";
+        var deviceIdValue = root.Attribute("device_id")?.Value
+            ?? throw new InvalidOperationException("XAPI root missing required 'device_id' attribute");
+        var deviceId = byte.Parse(deviceIdValue);
+        var deviceName = root.Attribute("device_name")?.Value
+            ?? throw new InvalidOperationException("XAPI root missing required 'device_name' attribute");
 
         var dataTypes = new Dictionary<string, DataTypeDefinition>();
         var dtElement = root.Element("datatypes");
@@ -115,6 +120,9 @@ public sealed class XapiDefinitions
         {
             classes.Add(ParseClass(classEl, deviceName, dataTypes));
         }
+
+        if (classes.Count == 0)
+            throw new InvalidOperationException($"XAPI '{deviceName}' defines no classes");
 
         return new ApiDefinition(deviceName, deviceId, dataTypes, classes);
     }

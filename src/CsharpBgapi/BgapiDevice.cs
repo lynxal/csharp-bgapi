@@ -70,16 +70,18 @@ public sealed class BgapiDevice : IDisposable
         _stopReaderTimeout = TimeSpan.FromSeconds(_config.StopReaderTimeoutSeconds);
     }
 
-    public void LoadXapi(string path)
+    public ApiDefinition LoadXapi(string path)
     {
-        _definitions.LoadFromFile(path);
+        var api = _definitions.LoadFromFile(path);
         _connector.SetKnownDeviceIds(_definitions.GetKnownDeviceIds());
+        return api;
     }
 
-    public void LoadXapiFromStream(Stream stream)
+    public ApiDefinition LoadXapiFromStream(Stream stream)
     {
-        _definitions.LoadFromStream(stream);
+        var api = _definitions.LoadFromStream(stream);
         _connector.SetKnownDeviceIds(_definitions.GetKnownDeviceIds());
+        return api;
     }
 
     /// <summary>

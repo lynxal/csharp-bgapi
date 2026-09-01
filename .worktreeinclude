@@ -1,0 +1,2 @@
+# memory-os: gitignored CM wiring, copied into new git worktrees
+.memory/

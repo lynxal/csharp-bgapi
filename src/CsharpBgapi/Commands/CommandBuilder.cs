@@ -42,11 +42,29 @@ public sealed class CommandBuilder
         return this;
     }
 
+    /// <summary>
+    /// Encodes the configured command and consumes the builder's state: api, class, command and
+    /// every parameter are cleared, so a second call throws until they are set again.
+    /// </summary>
+    /// <remarks>
+    /// Build used to leave everything in place, so a builder pointed at a second command silently
+    /// reused any parameter of the same name from the first. Clearing only the parameters would be
+    /// worse — api/class/command would still resolve, and the next Build would encode a frame with
+    /// every parameter defaulted to zero and hand it to the radio. Clearing all of it makes the
+    /// misuse hit the guard above instead.
+    /// </remarks>
     public byte[] Build()
     {
         if (string.IsNullOrEmpty(_apiName) || string.IsNullOrEmpty(_className) || string.IsNullOrEmpty(_commandName))
             throw new InvalidOperationException("Api, Class, and Command must be set before building");
 
-        return _protocol.EncodeCommand(_apiName, _className, _commandName, _parameters);
+        var command = _protocol.EncodeCommand(_apiName, _className, _commandName, _parameters);
+
+        _apiName = "";
+        _className = "";
+        _commandName = "";
+        _parameters.Clear();
+
+        return command;
     }
 }

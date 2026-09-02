@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Breaking:** `AddCsharpBgapi()` now loads built-in XAPI definitions by default (`loadDefaultXapis` changed from `false` to `true`). Pass `loadDefaultXapis: false` to opt out.
+- **Breaking:** `BgapiConnector.FindSilabsPorts()` renamed to `FindPorts()`. It never filtered by vendor — it returns every serial port on the machine, and the new name says so.
+- **Breaking:** `CommandBuilder.Build()` now clears the builder's api, class, command and parameters. A builder is configured once per command; a second `Build()` throws `InvalidOperationException` instead of reusing the previous state.
+
+### Fixed
+
+- `RetryParams.RetryCmdMax` defaulted to `10` while `CsharpBgapiOptions.RetryCmdMax` defaults to `6`, so a hand-built `RetryParams` silently took a retry budget nobody configured. The record's defaults now match the options.
+- A `CommandBuilder` reused for a second command silently reused any parameter of the same name from the first.
+- Loading an XAPI whose `device_id` is already claimed by another loaded API silently overwrote that API's command and event lookups (last loaded won), decoding frames under the wrong definition and misinforming the frame-resync plausibility check. `LoadFromFile`/`LoadFromStream` now throw `InvalidOperationException`; reloading the same API name still replaces itself.
 
 ## [0.1.0] - 2026-03-26
 

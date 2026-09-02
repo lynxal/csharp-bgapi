@@ -400,7 +400,12 @@ public sealed class BgapiConnector : IDisposable
             && protocol.IsKnownHeader(header);
     }
 
-    public static string[] FindSilabsPorts()
+    /// <summary>
+    /// Every serial port name the machine reports. No vendor filtering is applied — a Silabs NCP
+    /// is not distinguishable from any other device here, so picking one is the caller's job.
+    /// (Was named FindSilabsPorts, which promised a filter it never had.)
+    /// </summary>
+    public static string[] FindPorts()
     {
         return SerialPort.GetPortNames();
     }

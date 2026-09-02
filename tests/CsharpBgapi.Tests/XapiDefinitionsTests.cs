@@ -61,4 +61,41 @@ public class XapiDefinitionsTests
         definitions.Invoking(d => d.LoadFromStream(StreamOf(xml)))
             .Should().Throw<InvalidOperationException>().WithMessage("*no classes*");
     }
+
+    // A second API claiming a device id already loaded used to be accepted: Reindex assigns into
+    // _commandsByHeader/_eventsByHeader by plain indexer, so the newcomer silently overwrote the
+    // first API's entries for every colliding (class, index) pair. Frames then decoded under the
+    // wrong definition, and MaxPayloadFor -- read by IsKnownHeader and the resync plausibility
+    // check -- answered from the wrong definition too.
+    [Fact]
+    public void LoadFromStream_ShouldThrow_WhenDeviceIdAlreadyLoadedUnderAnotherName()
+    {
+        var definitions = new XapiDefinitions();
+        var other = """
+            <api device_id="9" device_name="clash">
+              <class index="1" name="system">
+                <command index="0" name="hello">
+                  <returns><param name="result" type="errorcode"/></returns>
+                </command>
+              </class>
+            </api>
+            """;
+        definitions.LoadFromStream(StreamOf(ValidXapi));
+
+        definitions.Invoking(d => d.LoadFromStream(StreamOf(other)))
+            .Should().Throw<InvalidOperationException>().WithMessage("*device_id 9*already loaded*test*");
+
+        definitions.LoadedApiNames.Should().BeEquivalentTo(["test"]);
+    }
+
+    [Fact]
+    public void LoadFromStream_ShouldReplaceItself_WhenSameApiReloaded()
+    {
+        var definitions = new XapiDefinitions();
+        definitions.LoadFromStream(StreamOf(ValidXapi));
+
+        definitions.Invoking(d => d.LoadFromStream(StreamOf(ValidXapi))).Should().NotThrow();
+
+        definitions.LoadedApiNames.Should().BeEquivalentTo(["test"]);
+    }
 }

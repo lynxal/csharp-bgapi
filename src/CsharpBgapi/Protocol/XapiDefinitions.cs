@@ -30,6 +30,7 @@ public sealed class XapiDefinitions
         var doc = XDocument.Load(path);
         var root = doc.Root ?? throw new InvalidOperationException("Empty XAPI file");
         var api = ParseApi(root);
+        EnsureDeviceIdUnclaimed(api);
         _apis[api.Name] = api;
         Reindex();
         return api;
@@ -40,9 +41,28 @@ public sealed class XapiDefinitions
         var doc = XDocument.Load(stream);
         var root = doc.Root ?? throw new InvalidOperationException("Empty XAPI file");
         var api = ParseApi(root);
+        EnsureDeviceIdUnclaimed(api);
         _apis[api.Name] = api;
         Reindex();
         return api;
+    }
+
+    // APIs are stored by name but every inbound frame resolves by device id, and Reindex assigns
+    // into _commandsByHeader/_eventsByHeader by plain indexer. So a second API claiming a loaded
+    // device id used to overwrite the first one's entries silently -- last loaded wins. That
+    // decodes frames under the wrong definition, and MaxPayloadFor (which IsKnownHeader and the
+    // resync plausibility check read) then answers from the wrong definition too. A definition set
+    // that parses but misroutes is a malformed static contract, so it fails loud at load like the
+    // ParseApi checks above. Reloading the same name replaces itself and stays legal.
+    private void EnsureDeviceIdUnclaimed(ApiDefinition api)
+    {
+        foreach (var (name, loaded) in _apis)
+        {
+            if (loaded.DeviceId == api.DeviceId && name != api.Name)
+                throw new InvalidOperationException(
+                    $"XAPI device_id {api.DeviceId} is already loaded as API '{name}'; " +
+                    $"'{api.Name}' would overwrite its command and event lookups");
+        }
     }
 
     public byte GetDeviceId(string apiName)

@@ -200,7 +200,7 @@ device.Subscribe("btmesh_evt_vendor_model_receive", message =>
 | `EventSelector` | Event matching criteria for WaitEvents |
 | `CsharpBgapiOptions` | Configuration POCO for all tunable parameters |
 | `CsharpBgapiServiceExtensions` | DI registration extension methods |
-| `SlStatus` | Silicon Labs status/error code enum (275+ codes) |
+| `SlStatus` | Silicon Labs status/error code enum (249 codes) |
 | `CommandBuilder` | Fluent command builder for constructing BGAPI commands |
 
 ## Contributing

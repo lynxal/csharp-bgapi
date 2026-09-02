@@ -31,6 +31,60 @@ public sealed class BgapiProtocol
         return result;
     }
 
+    /// <summary>
+    /// True when the loaded XAPI definitions resolve this header to a real event or command AND
+    /// its declared payload length is one that definition could produce — i.e. the four bytes
+    /// plausibly start a frame rather than sitting mid-payload.
+    ///
+    /// Framing uses this instead of the device-id nibble alone: the nibble accepts roughly one
+    /// random byte in eight, which is how a desynced stream produced a btmesh cls=0 idx=0
+    /// "response" (btmesh has no class 0) that swallowed a real response as its payload. Resolving
+    /// the definition alone is not enough either: a mid-payload window can land on a real
+    /// (device, class, index) triple, and its 11-bit length field then claims up to 2047 bytes that
+    /// continuing traffic happily supplies — swallowing whole real frames long before
+    /// <c>StalledCandidateBudget</c> could expire. Most responses return only an errorcode, so the
+    /// bound is 2 bytes and such a window dies immediately.
+    /// </summary>
+    public bool IsKnownHeader(in BgapiHeader header)
+    {
+        var maxPayload = _definitions.FindMaxPayloadLength(
+            header.DeviceId, header.ClassIndex, header.CommandIndex, header.IsEvent);
+        return maxPayload is not null && header.PayloadLength <= maxPayload;
+    }
+
+    /// <summary>Largest payload a BGAPI frame can declare — the length field is 11 bits.</summary>
+    internal const int MaxFramePayload = 0x7FF;
+
+    /// <summary>
+    /// Upper bound on the payload these parameters can occupy on the wire, mirroring the sizes
+    /// <see cref="ReadValue"/> consumes. Variable-length arrays contribute their prefix plus the
+    /// largest length that prefix can express; a parameter whose size cannot be derived disables
+    /// the bound by returning <see cref="MaxFramePayload"/> rather than risk rejecting real frames.
+    /// </summary>
+    internal static int MaxPayloadLength(IReadOnlyList<XapiParameter> parameters)
+    {
+        int max = 0;
+        foreach (var param in parameters)
+        {
+            max += param.ResolvedType switch
+            {
+                "uint8" or "int8" => 1,
+                "uint16" or "errorcode" or "int16" or "sl_bt_uuid_16_t" => 2,
+                "uint32" or "int32" or "ipv4" => 4,
+                "uint64" or "int64" or "sl_bt_uuid_64_t" => 8,
+                "bd_addr" or "hw_addr" => 6,
+                "uuid_128" or "aes_key_128" => 16,
+                "uint8array" or "byte_array" => 1 + byte.MaxValue,
+                "uint16array" => 2 + ushort.MaxValue,
+                _ => param.Length > 0 ? param.Length : MaxFramePayload,
+            };
+
+            if (max >= MaxFramePayload) return MaxFramePayload;
+        }
+
+        return max;
+    }
+
     public BgapiMessage DecodeMessage(ReadOnlySpan<byte> data)
     {
         var header = BgapiHeader.Parse(data);

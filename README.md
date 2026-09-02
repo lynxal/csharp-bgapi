@@ -95,7 +95,8 @@ All tunable parameters are exposed via `CsharpBgapiOptions`:
 | `DefaultBaudRate` | 115200 | Default baud rate for serial port communication |
 | `SerialReadTimeoutMs` | 1000 | Serial port read timeout (ms) |
 | `SerialWriteTimeoutMs` | 1000 | Serial port write timeout (ms) |
-| `ReadExactMaxRetries` | 5 | Max retries for partial read timeouts |
+| `PartialFrameTimeoutMs` | 500 | How long a partially received frame waits for the rest of its payload before the receive path abandons it and resyncs (ms) |
+| `ReadExactMaxRetries` | 5 | Deprecated, no longer read — superseded by `PartialFrameTimeoutMs` |
 | `ResponseTimeoutSeconds` | 2.0 | Default timeout for command responses |
 | `ReaderLoopReadTimeoutMs` | 100 | Read timeout for background reader loop (ms) |
 | `StopReaderTimeoutSeconds` | 2.0 | Timeout for stopping the reader thread |
@@ -144,7 +145,7 @@ services.AddCsharpBgapi(options =>
     "DefaultBaudRate": 115200,
     "SerialReadTimeoutMs": 1000,
     "SerialWriteTimeoutMs": 1000,
-    "ReadExactMaxRetries": 5,
+    "PartialFrameTimeoutMs": 500,
     "ResponseTimeoutSeconds": 2.0,
     "ReaderLoopReadTimeoutMs": 100,
     "StopReaderTimeoutSeconds": 2.0,

@@ -1,4 +1,6 @@
 using CsharpBgapi.Protocol;
+using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CsharpBgapi.Tests;
@@ -59,5 +61,43 @@ public class BgapiDeviceTests
         device.HandleResponseMessage(CreateResponse(deviceId: 4, classIndex: 0x22, commandIndex: 0x09));
 
         Assert.False(tcs.Task.IsCompleted);
+    }
+
+    // Framing desync is detected and reported by the connector, which never emits a frame the
+    // definitions cannot name. What reaches here is only ever a genuine late reply from a
+    // previous, timed-out command, and it must be dropped without completing the pending TCS.
+
+    [Fact]
+    public void HandleResponseMessage_NameableMismatch_LogsStaleResponseAndDropsIt()
+    {
+        var logger = new RecordingLogger();
+        using var device = new BgapiDevice(logger);
+        var tcs = device.InstallPendingCommand(BgapiHeader.CreateCommand(deviceId: 5, classIndex: 40, commandIndex: 5, payloadLength: 0));
+
+        // A real, nameable response from a different command — a genuine late reply.
+        var late = new BgapiMessage(BgapiHeader.CreateCommand(deviceId: 4, classIndex: 0x22, commandIndex: 0x09, payloadLength: 0), ReadOnlyMemory<byte>.Empty)
+        {
+            EventName = "bt_cmd_something_response"
+        };
+        device.HandleResponseMessage(late);
+
+        tcs.Task.IsCompleted.Should().BeFalse();
+        logger.Warnings.Should().ContainSingle().Which.Should().Contain("stale response");
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
+        }
     }
 }

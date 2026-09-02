@@ -9,6 +9,12 @@ public sealed class XapiDefinitions
 {
     private readonly Dictionary<string, ApiDefinition> _apis = new();
 
+    // (deviceId, classIndex, index) -> the definition plus the largest payload it can describe.
+    // Framing asks this once per candidate byte while resyncing, so the chained linear scans this
+    // replaces sat on the reader thread's hot path.
+    private readonly Dictionary<int, (CommandDefinition Def, int MaxPayload)> _commandsByHeader = new();
+    private readonly Dictionary<int, (EventDefinition Def, int MaxPayload)> _eventsByHeader = new();
+
     /// <summary>
     /// Returns true if at least one XAPI definition has been loaded.
     /// </summary>
@@ -25,6 +31,7 @@ public sealed class XapiDefinitions
         var root = doc.Root ?? throw new InvalidOperationException("Empty XAPI file");
         var api = ParseApi(root);
         _apis[api.Name] = api;
+        Reindex();
         return api;
     }
 
@@ -34,6 +41,7 @@ public sealed class XapiDefinitions
         var root = doc.Root ?? throw new InvalidOperationException("Empty XAPI file");
         var api = ParseApi(root);
         _apis[api.Name] = api;
+        Reindex();
         return api;
     }
 
@@ -54,24 +62,57 @@ public sealed class XapiDefinitions
 
     public EventDefinition? FindEvent(byte deviceId, byte classIndex, byte eventIndex)
     {
-        var api = _apis.Values.FirstOrDefault(a => a.DeviceId == deviceId);
-        if (api is null) return null;
-
-        var cls = api.Classes.FirstOrDefault(c => c.Index == classIndex);
-        if (cls is null) return null;
-
-        return cls.Events.FirstOrDefault(e => e.Index == eventIndex);
+        return _eventsByHeader.TryGetValue(HeaderKey(deviceId, classIndex, eventIndex), out var entry)
+            ? entry.Def
+            : null;
     }
 
     public CommandDefinition? FindCommand(byte deviceId, byte classIndex, byte commandIndex)
     {
-        var api = _apis.Values.FirstOrDefault(a => a.DeviceId == deviceId);
-        if (api is null) return null;
+        return _commandsByHeader.TryGetValue(HeaderKey(deviceId, classIndex, commandIndex), out var entry)
+            ? entry.Def
+            : null;
+    }
 
-        var cls = api.Classes.FirstOrDefault(c => c.Index == classIndex);
-        if (cls is null) return null;
+    /// <summary>
+    /// The largest payload the definition addressed by this header can describe, or null when no
+    /// definition resolves. Variable-length array parameters contribute their maximum, so this is
+    /// an upper bound only — never a required size, because a truncated payload still decodes as
+    /// far as it goes.
+    /// </summary>
+    internal int? FindMaxPayloadLength(byte deviceId, byte classIndex, byte index, bool isEvent)
+    {
+        var key = HeaderKey(deviceId, classIndex, index);
+        if (isEvent)
+            return _eventsByHeader.TryGetValue(key, out var evt) ? evt.MaxPayload : null;
+        return _commandsByHeader.TryGetValue(key, out var cmd) ? cmd.MaxPayload : null;
+    }
 
-        return cls.Commands.FirstOrDefault(c => c.Index == commandIndex);
+    private static int HeaderKey(byte deviceId, byte classIndex, byte index)
+        => (deviceId << 16) | (classIndex << 8) | index;
+
+    private void Reindex()
+    {
+        _commandsByHeader.Clear();
+        _eventsByHeader.Clear();
+
+        foreach (var api in _apis.Values)
+        {
+            foreach (var cls in api.Classes)
+            {
+                foreach (var cmd in cls.Commands)
+                {
+                    _commandsByHeader[HeaderKey(api.DeviceId, cls.Index, cmd.Index)] =
+                        (cmd, BgapiProtocol.MaxPayloadLength(cmd.Returns));
+                }
+
+                foreach (var evt in cls.Events)
+                {
+                    _eventsByHeader[HeaderKey(api.DeviceId, cls.Index, evt.Index)] =
+                        (evt, BgapiProtocol.MaxPayloadLength(evt.Parameters));
+                }
+            }
+        }
     }
 
     public IReadOnlySet<byte> GetKnownDeviceIds()

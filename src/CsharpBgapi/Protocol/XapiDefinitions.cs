@@ -127,7 +127,7 @@ public sealed class XapiDefinitions
         return api.Classes;
     }
 
-    private ClassDefinition GetClass(string apiName, string className)
+    internal ClassDefinition GetClass(string apiName, string className)
     {
         if (!_apis.TryGetValue(apiName, out var api))
             throw new KeyNotFoundException($"API '{apiName}' not loaded");

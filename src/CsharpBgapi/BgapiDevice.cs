@@ -336,28 +336,20 @@ public sealed class BgapiDevice : IDisposable
             new Dictionary<string, object> { { "data", payload } });
     }
 
-    private uint GetEventId(string apiName, string className, string eventName)
+    // An unresolvable class or event name must throw, not compose an id. The lookup used to
+    // start clsIdx/evtIdx at 0 and assign only on a match, so a typo'd or firmware-renamed name
+    // returned the id of class 0 / event 0 — the *EventFilter callers then filtered a different
+    // event than the caller named, and the NCP answered OK. GetDeviceId below already throws
+    // KeyNotFoundException for an unknown api; class and event names now fail the same way.
+    internal uint GetEventId(string apiName, string className, string eventName)
     {
         var devId = _definitions.GetDeviceId(apiName);
-        byte clsIdx = 0;
-        byte evtIdx = 0;
+        var cls = _definitions.GetClass(apiName, className);
+        var evt = cls.Events.FirstOrDefault(e => e.Name == eventName)
+            ?? throw new KeyNotFoundException($"Event '{eventName}' not found in {apiName}.{className}");
 
-        foreach (var c in _definitions.FindAllClasses(apiName))
-        {
-            if (c.Name == className)
-            {
-                clsIdx = c.Index;
-                foreach (var e in c.Events)
-                {
-                    if (e.Name == eventName)
-                    {
-                        evtIdx = e.Index;
-                        break;
-                    }
-                }
-                break;
-            }
-        }
+        var clsIdx = cls.Index;
+        var evtIdx = evt.Index;
 
         // Event identifier layout (from Python):
         // Bit 24-31: Event index

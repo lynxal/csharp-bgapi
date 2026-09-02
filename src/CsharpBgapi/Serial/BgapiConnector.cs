@@ -157,7 +157,7 @@ public sealed class BgapiConnector : IDisposable
         if (_port is not { IsOpen: true })
             throw new InvalidOperationException("Serial port is not open");
 
-        _logger.LogDebug("Sending command: {ByteCount} bytes", data);
+        _logger.LogDebug("Sending command: {ByteCount} bytes", data.Length);
 
         lock (_sendLock)
         {

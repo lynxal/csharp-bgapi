@@ -160,10 +160,12 @@ services.AddCsharpBgapi(options =>
 
 ## Usage Examples
 
+> These continue from Quick Start and additionally need `using CsharpBgapi.Events;`.
+
 ### Wait for Events
 
 ```csharp
-var selector = new EventSelector("bt", "mesh", "vendor_model_receive");
+var selector = new NameParamSelector("btmesh_evt_vendor_model_receive");
 var events = device.WaitEvents(selector, TimeSpan.FromSeconds(5), finalEventCount: 3);
 ```
 
@@ -171,8 +173,8 @@ var events = device.WaitEvents(selector, TimeSpan.FromSeconds(5), finalEventCoun
 
 ```csharp
 var events = await device.RetryUntilAsync(
-    command: () => device.SendCommandAsync("bt", "mesh", "vendor_model_send", parameters),
-    eventSelector: new EventSelector("bt", "mesh", "vendor_model_receive"),
+    command: () => device.SendCommandAsync("btmesh", "vendor_model", "send", parameters),
+    eventSelector: new NameParamSelector("btmesh_evt_vendor_model_receive"),
     retryParams: new RetryParams { RetryMax = 3, RetryInterval = TimeSpan.FromSeconds(2) },
     finalEventCount: 1);
 ```
@@ -180,7 +182,7 @@ var events = await device.RetryUntilAsync(
 ### Subscribe to Events
 
 ```csharp
-device.Subscribe("evt_mesh_vendor_model_receive", message =>
+device.Subscribe("btmesh_evt_vendor_model_receive", message =>
 {
     Console.WriteLine($"Received vendor event: {message.EventName}");
 });

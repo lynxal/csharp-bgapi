@@ -85,6 +85,46 @@ public class BgapiDeviceTests
         logger.Warnings.Should().ContainSingle().Which.Should().Contain("stale response");
     }
 
+    // GetEventId used to initialise clsIdx/evtIdx to 0 and assign them only on a name match, so
+    // an unknown class or event name still composed and returned an id — the one addressing
+    // class 0, event 0. AddEventFilter/RemoveEventFilter then installed or removed a filter on a
+    // different event than the caller named, and the NCP answered OK, giving the caller positive
+    // confirmation of the wrong action.
+
+    [Fact]
+    public void GetEventId_ResolvingNames_ComposesId()
+    {
+        using var device = new BgapiDevice();
+        device.LoadDefaultXapis();
+
+        // btmesh: device_id 5, class vendor_model index 25, event receive index 0.
+        var eventId = device.GetEventId("btmesh", "vendor_model", "receive");
+
+        eventId.Should().Be((0u << 24) | (25u << 16) | 0x80 | (5u << 3));
+    }
+
+    [Fact]
+    public void GetEventId_UnknownClassName_Throws()
+    {
+        using var device = new BgapiDevice();
+        device.LoadDefaultXapis();
+
+        var act = () => device.GetEventId("btmesh", "mesh", "receive");
+
+        act.Should().Throw<KeyNotFoundException>();
+    }
+
+    [Fact]
+    public void GetEventId_UnknownEventName_Throws()
+    {
+        using var device = new BgapiDevice();
+        device.LoadDefaultXapis();
+
+        var act = () => device.GetEventId("btmesh", "vendor_model", "vendor_model_receive");
+
+        act.Should().Throw<KeyNotFoundException>();
+    }
+
     private sealed class RecordingLogger : ILogger
     {
         public List<string> Warnings { get; } = [];

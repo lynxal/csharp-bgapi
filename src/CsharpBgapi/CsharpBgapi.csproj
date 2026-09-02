@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <RootNamespace>CsharpBgapi</RootNamespace>
-    <AssemblyVersion>0.1.0</AssemblyVersion>
+    <AssemblyVersion>0.2.0</AssemblyVersion>
     <Version>$(AssemblyVersion)</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>CS1591</NoWarn>

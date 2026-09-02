@@ -95,7 +95,8 @@ All tunable parameters are exposed via `CsharpBgapiOptions`:
 | `DefaultBaudRate` | 115200 | Default baud rate for serial port communication |
 | `SerialReadTimeoutMs` | 1000 | Serial port read timeout (ms) |
 | `SerialWriteTimeoutMs` | 1000 | Serial port write timeout (ms) |
-| `ReadExactMaxRetries` | 5 | Max retries for partial read timeouts |
+| `PartialFrameTimeoutMs` | 500 | How long a partially received frame waits for the rest of its payload before the receive path abandons it and resyncs (ms) |
+| `ReadExactMaxRetries` | 5 | Deprecated, no longer read — superseded by `PartialFrameTimeoutMs` |
 | `ResponseTimeoutSeconds` | 2.0 | Default timeout for command responses |
 | `ReaderLoopReadTimeoutMs` | 100 | Read timeout for background reader loop (ms) |
 | `StopReaderTimeoutSeconds` | 2.0 | Timeout for stopping the reader thread |
@@ -144,7 +145,7 @@ services.AddCsharpBgapi(options =>
     "DefaultBaudRate": 115200,
     "SerialReadTimeoutMs": 1000,
     "SerialWriteTimeoutMs": 1000,
-    "ReadExactMaxRetries": 5,
+    "PartialFrameTimeoutMs": 500,
     "ResponseTimeoutSeconds": 2.0,
     "ReaderLoopReadTimeoutMs": 100,
     "StopReaderTimeoutSeconds": 2.0,
@@ -159,10 +160,12 @@ services.AddCsharpBgapi(options =>
 
 ## Usage Examples
 
+> These continue from Quick Start and additionally need `using CsharpBgapi.Events;`.
+
 ### Wait for Events
 
 ```csharp
-var selector = new EventSelector("bt", "mesh", "vendor_model_receive");
+var selector = new NameParamSelector("btmesh_evt_vendor_model_receive");
 var events = device.WaitEvents(selector, TimeSpan.FromSeconds(5), finalEventCount: 3);
 ```
 
@@ -170,8 +173,8 @@ var events = device.WaitEvents(selector, TimeSpan.FromSeconds(5), finalEventCoun
 
 ```csharp
 var events = await device.RetryUntilAsync(
-    command: () => device.SendCommandAsync("bt", "mesh", "vendor_model_send", parameters),
-    eventSelector: new EventSelector("bt", "mesh", "vendor_model_receive"),
+    command: () => device.SendCommandAsync("btmesh", "vendor_model", "send", parameters),
+    eventSelector: new NameParamSelector("btmesh_evt_vendor_model_receive"),
     retryParams: new RetryParams { RetryMax = 3, RetryInterval = TimeSpan.FromSeconds(2) },
     finalEventCount: 1);
 ```
@@ -179,7 +182,7 @@ var events = await device.RetryUntilAsync(
 ### Subscribe to Events
 
 ```csharp
-device.Subscribe("evt_mesh_vendor_model_receive", message =>
+device.Subscribe("btmesh_evt_vendor_model_receive", message =>
 {
     Console.WriteLine($"Received vendor event: {message.EventName}");
 });
@@ -197,7 +200,7 @@ device.Subscribe("evt_mesh_vendor_model_receive", message =>
 | `EventSelector` | Event matching criteria for WaitEvents |
 | `CsharpBgapiOptions` | Configuration POCO for all tunable parameters |
 | `CsharpBgapiServiceExtensions` | DI registration extension methods |
-| `SlStatus` | Silicon Labs status/error code enum (275+ codes) |
+| `SlStatus` | Silicon Labs status/error code enum (249 codes) |
 | `CommandBuilder` | Fluent command builder for constructing BGAPI commands |
 
 ## Contributing

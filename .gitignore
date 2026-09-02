@@ -44,8 +44,9 @@ coverage/
 !src/CsharpBgapi/build/
 !src/CsharpBgapi/build/*.targets
 
-## memory-os (local machine config; project_memory/ stays tracked)
+## memory-os (local machine config and operational memory; not shared)
 .memory/
+operational_memory/
 
 ## Agent OS
 agent-os/

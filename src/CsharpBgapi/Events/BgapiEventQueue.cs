@@ -424,9 +424,13 @@ public sealed class BgapiEventQueue
 
 public record RetryParams
 {
+    // These literals must stay equal to the CsharpBgapiOptions defaults: a caller who hand-builds
+    // a RetryParams to set one field takes them for every field left alone. RetryCmdMax used to
+    // read 10 against the option's 6, so such a caller silently got a retry budget nobody
+    // configured. Pinned by RetryParamsTests.
     public int RetryMax { get; init; } = 5;
     public TimeSpan RetryInterval { get; init; } = TimeSpan.FromSeconds(1);
-    public int RetryCmdMax { get; init; } = 10;
+    public int RetryCmdMax { get; init; } = 6;
     public TimeSpan RetryCmdInterval { get; init; } = TimeSpan.FromSeconds(1);
 
     /// <summary>

@@ -15,7 +15,16 @@ public sealed class CsharpBgapiOptions
     /// <summary>Serial port write timeout in milliseconds.</summary>
     public int SerialWriteTimeoutMs { get; set; } = 1000;
 
-    /// <summary>Maximum retries for ReadExact when partial reads timeout.</summary>
+    /// <summary>
+    /// How long a partially received frame may wait for the rest of its payload before the receive
+    /// path abandons it and resyncs. A frame that never completes means a payload byte was lost or
+    /// the header's length bits are corrupt; keeping it would fold the next real frame's bytes into
+    /// it.
+    /// </summary>
+    public int PartialFrameTimeoutMs { get; set; } = 500;
+
+    /// <summary>Unused. The receive path buffers partial frames instead of retrying a blocking read.</summary>
+    [Obsolete("No longer read. Use PartialFrameTimeoutMs to tune how long a partial frame is kept.")]
     public int ReadExactMaxRetries { get; set; } = 5;
 
     /// <summary>Default timeout in seconds for waiting for command responses.</summary>

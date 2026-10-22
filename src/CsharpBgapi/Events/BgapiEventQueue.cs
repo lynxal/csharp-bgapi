@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -11,12 +10,37 @@ namespace CsharpBgapi.Events;
 /// Event queue with selector-based waiting. Ports BGLibExt event waiting patterns.
 /// Events are enqueued from the reader thread and consumed by WaitEvents/RetryUntilAsync.
 /// </summary>
+/// <remarks>
+/// A wait takes only the events its selector selects and leaves every other event where it is, in
+/// arrival order, for other waiters. The earlier design dequeued everything, held the non-matching
+/// events in a private list and re-enqueued them at the tail when the call returned. With two
+/// consumers on one queue — the Hub's vendor-model receive loop polling every 200 ms and its
+/// firmware clients waiting up to a chunk budget — a firmware wait kept the vendor-model events it
+/// happened to win until its own window ended, order was lost on re-enqueue, a wait cancelled
+/// mid-flight dropped what it held, and events no consumer ever selected were re-queued forever and
+/// re-examined by every later call (2026-10-22, Hub NcpLifecycleService + BlobTransferClient).
+/// Unclaimed events are now bounded by <see cref="CsharpBgapiOptions.MaxQueuedEvents"/>.
+/// </remarks>
 public sealed class BgapiEventQueue
 {
     private readonly CsharpBgapiOptions _config;
     private readonly ILogger _logger;
-    private readonly ConcurrentQueue<BgapiMessage> _queue = new();
-    private readonly SemaphoreSlim _signal = new(0, int.MaxValue);
+    private readonly Lock _gate = new();
+    // Ascending by Seq. Events stay here until a waiter takes them, bounded by MaxQueuedEvents.
+    private readonly List<QueuedEvent> _events = [];
+    private readonly int _maxQueued;
+    private long _nextSeq;
+    private long _droppedEventCount;
+    private bool _dropLogged;
+    // Completed and replaced on every Enqueue. A waiter takes the current ticket under the same
+    // lock that found nothing left to examine, so an arrival between that scan and the wait
+    // completes the very ticket it is about to wait on.
+    private TaskCompletionSource<bool> _arrival = NewTicket();
+
+    private readonly record struct QueuedEvent(long Seq, BgapiMessage Message);
+
+    private static TaskCompletionSource<bool> NewTicket() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public BgapiEventQueue() : this((ILogger?)null) { }
 
@@ -30,22 +54,84 @@ public sealed class BgapiEventQueue
     {
         _config = options.Value;
         _logger = logger;
+        _maxQueued = Math.Max(1, _config.MaxQueuedEvents);
     }
 
-    public void Enqueue(BgapiMessage message)
+    /// <summary>Events currently retained: queued by the reader and not yet taken by a waiter.</summary>
+    public int Count
     {
-        _queue.Enqueue(message);
-        _signal.Release();
+        get { lock (_gate) return _events.Count; }
     }
 
     /// <summary>
-    /// Gets the next event from the queue, waiting up to timeout.
+    /// Events evicted because the queue already held <see cref="CsharpBgapiOptions.MaxQueuedEvents"/>
+    /// that no waiter had taken. A growing value means events are produced that nothing consumes.
+    /// </summary>
+    public long DroppedEventCount => Interlocked.Read(ref _droppedEventCount);
+
+    public void Enqueue(BgapiMessage message)
+    {
+        TaskCompletionSource<bool> ticket;
+        bool dropped = false, firstDrop = false;
+        long total = 0;
+
+        lock (_gate)
+        {
+            _events.Add(new QueuedEvent(_nextSeq++, message));
+            if (_events.Count > _maxQueued)
+            {
+                _events.RemoveAt(0);
+                total = Interlocked.Increment(ref _droppedEventCount);
+                dropped = true;
+                firstDrop = !_dropLogged;
+                _dropLogged = true;
+            }
+            ticket = _arrival;
+            _arrival = NewTicket();
+        }
+
+        ticket.TrySetResult(true);
+
+        if (!dropped) return;
+        // One warning per episode; Clear() starts a new one. The counter carries the rest.
+        if (firstDrop)
+        {
+            _logger.LogWarning(
+                "Event queue full ({Max} events): dropped the oldest unclaimed event ({Total} dropped so far). Events accumulate when no WaitEvents consumer takes them — raise CsharpBgapiOptions.MaxQueuedEvents, consume them, or Clear() the queue; further drops log at Debug",
+                _maxQueued, total);
+        }
+        else
+        {
+            _logger.LogDebug(
+                "Event queue full ({Max} events): dropped the oldest unclaimed event ({Total} dropped so far)",
+                _maxQueued, total);
+        }
+    }
+
+    /// <summary>
+    /// Gets the oldest queued event, waiting up to timeout for one to arrive.
     /// </summary>
     public BgapiMessage? GetEvent(TimeSpan timeout)
     {
-        if (_signal.Wait(timeout) && _queue.TryDequeue(out var msg))
-            return msg;
-        return null;
+        var start = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            TaskCompletionSource<bool> arrival;
+            lock (_gate)
+            {
+                if (_events.Count > 0)
+                {
+                    var head = _events[0];
+                    _events.RemoveAt(0);
+                    return head.Message;
+                }
+                arrival = _arrival;
+            }
+
+            var remaining = timeout == Timeout.InfiniteTimeSpan ? timeout : timeout - Stopwatch.GetElapsedTime(start);
+            if (Expired(remaining) || !WaitForArrival(arrival, remaining, CancellationToken.None))
+                return null;
+        }
     }
 
     /// <summary>
@@ -69,10 +155,18 @@ public sealed class BgapiEventQueue
     /// Wait for events matching a selector. Ports Python BGLibExt.wait_events.
     ///
     /// Key differences from simple dequeue:
-    /// - Non-matching events are re-enqueued (not dropped)
+    /// - Non-matching events are left in the queue, in arrival order, for other waiters — never
+    ///   held by this call, re-ordered, or dropped
     /// - Supports soft final event count for early termination
     /// - Supports event accumulation across calls via selectedEvents parameter
     /// - Throws BgapiWaitEventException when finalEventCount is specified but not reached
+    /// - Throws OperationCanceledException when ct is cancelled, before or during the wait
+    ///
+    /// The wait ends at the earlier of <paramref name="timeout"/> and <paramref name="maxTime"/>,
+    /// measured from the call (or from the last selected event when
+    /// <paramref name="resetTimeoutOnEvent"/>), when the final count is reached, or when
+    /// <paramref name="maxEvents"/> have been collected. <see cref="Timeout.InfiniteTimeSpan"/> for
+    /// either bound means that bound is absent.
     /// </summary>
     public BgapiEventList WaitEvents(
         EventSelector selector,
@@ -99,130 +193,205 @@ public sealed class BgapiEventQueue
         var thresholdCount = softFinalEventCount ?? effectiveFinalCount;
         var selected = selectedEvents ?? new BgapiEventList();
         var effectiveMaxTime = maxTime ?? TimeSpan.FromSeconds(_config.WaitEventsDefaultMaxTimeSeconds);
-        var ignoredEvents = new List<BgapiMessage>();
+        var budget = Earlier(timeout, effectiveMaxTime);
 
         _logger.LogDebug("WaitEvents: selector={Selector} timeout={Timeout}ms maxTime={MaxTime}ms finalEventCount={FinalEventCount}",
             selector, timeout.TotalMilliseconds, effectiveMaxTime.TotalMilliseconds, finalEventCount);
 
-        bool restartMaxTime = true;
-        while (restartMaxTime && !ct.IsCancellationRequested)
+        // Every queued event with Seq > cursor is still unexamined by THIS call. Each call examines
+        // each event at most once and removes only what its selector takes; what it ignores stays
+        // in place for other waiters, so nothing is ever held, re-ordered or lost on cancellation.
+        long cursor = -1;
+        var clock = Stopwatch.StartNew();
+        bool thresholdReached = false;
+        bool maxEventsReached = false;
+
+        while (true)
         {
-            restartMaxTime = false;
-            var sw = Stopwatch.StartNew();
+            // Cancellation and the deadline are checked between candidates, so a backlog, a steady
+            // stream of ignored events, or a slow selector cannot carry the call past its budget.
+            ct.ThrowIfCancellationRequested();
+            var remaining = Remaining(budget, clock);
+            if (Expired(remaining)) break;
 
-            while (!ct.IsCancellationRequested)
+            var scan = ScanNext(selector, selected, keepAllEvents, ref cursor, out var message, out var category, out var arrival);
+            if (scan == Scan.Skipped) continue;
+            if (scan == Scan.Exhausted)
             {
-                if (sw.Elapsed >= effectiveMaxTime)
-                    break;
-
-                var remaining = timeout - (resetTimeoutOnEvent ? TimeSpan.Zero : sw.Elapsed);
-                if (remaining <= TimeSpan.Zero)
-                    remaining = TimeSpan.FromMilliseconds(1);
-
-                var waitTime = effectiveMaxTime - sw.Elapsed;
-                if (waitTime <= TimeSpan.Zero) break;
-                if (waitTime > remaining) waitTime = remaining;
-
-                if (!_signal.Wait(waitTime, ct))
-                    break;
-
-                if (!_queue.TryDequeue(out var message))
-                    continue;
-
-                var category = selector.Categorize(message, selected);
-                switch (category)
-                {
-                    case EventCategory.SelectFinal:
-                        selected.Add(message);
-                        selected.FinalEventCount++;
-                        if (selected.FinalEventCount >= thresholdCount)
-                            goto ThresholdReached;
-                        if (resetTimeoutOnEvent)
-                        {
-                            restartMaxTime = true;
-                            goto BreakInner;
-                        }
-                        break;
-
-                    case EventCategory.SelectContinue:
-                        selected.Add(message);
-                        if (resetTimeoutOnEvent)
-                        {
-                            restartMaxTime = true;
-                            goto BreakInner;
-                        }
-                        break;
-
-                    case EventCategory.Ignore:
-                        if (keepAllEvents)
-                            selected.Add(message);
-                        else
-                            ignoredEvents.Add(message);
-                        continue;
-                }
-
-                if (selected.Count >= maxEvents)
-                    goto Done;
+                if (!WaitForArrival(arrival!, remaining, ct)) break;
+                continue;
             }
-            BreakInner:;
+
+            selected.Add(message!);
+            if (category == EventCategory.SelectFinal)
+            {
+                selected.FinalEventCount++;
+                if (selected.FinalEventCount >= thresholdCount)
+                {
+                    thresholdReached = true;
+                    break;
+                }
+            }
+
+            if (category != EventCategory.Ignore && resetTimeoutOnEvent)
+                clock.Restart();
+
+            if (selected.Count >= maxEvents)
+            {
+                maxEventsReached = true;
+                break;
+            }
         }
 
-    ThresholdReached:
-        if (selected.FinalEventCount >= thresholdCount && thresholdCount < effectiveFinalCount)
+        if (thresholdReached && thresholdCount < effectiveFinalCount)
         {
-            // Soft final reached: process remaining events for a short time
+            // Soft final reached: keep collecting for a short window, up to the hard final count.
             if (softFinalEventProcTime.HasValue)
             {
-                var procSw = Stopwatch.StartNew();
-                while (procSw.Elapsed < softFinalEventProcTime.Value && !ct.IsCancellationRequested)
+                var window = Stopwatch.StartNew();
+                while (true)
                 {
-                    var remaining = softFinalEventProcTime.Value - procSw.Elapsed;
-                    if (remaining <= TimeSpan.Zero) break;
+                    ct.ThrowIfCancellationRequested();
+                    var remaining = softFinalEventProcTime.Value - window.Elapsed;
+                    if (Expired(remaining)) break;
 
-                    if (!_signal.Wait(remaining, ct))
-                        break;
-
-                    if (!_queue.TryDequeue(out var message))
+                    var scan = ScanNext(selector, selected, keepAllEvents, ref cursor, out var message, out var category, out var arrival);
+                    if (scan == Scan.Skipped) continue;
+                    if (scan == Scan.Exhausted)
+                    {
+                        if (!WaitForArrival(arrival!, remaining, ct)) break;
                         continue;
-
-                    var category = selector.Categorize(message, selected);
-                    if (category == EventCategory.SelectContinue)
-                    {
-                        selected.Add(message);
                     }
-                    else if (category == EventCategory.SelectFinal)
+
+                    selected.Add(message!);
+                    if (category == EventCategory.SelectFinal)
                     {
-                        selected.Add(message);
                         selected.FinalEventCount++;
                         if (selected.FinalEventCount >= effectiveFinalCount)
                             break;
                     }
-                    else if (keepAllEvents)
-                    {
-                        selected.Add(message);
-                    }
-                    else
-                    {
-                        ignoredEvents.Add(message);
-                    }
                 }
             }
 
-            ReEnqueueIgnored(ignoredEvents);
             return selected;
         }
 
-        // If finalEventCount was specified but not reached, throw
-        if (finalEventCount.HasValue && selected.FinalEventCount < thresholdCount)
-        {
-            ReEnqueueIgnored(ignoredEvents);
+        // finalEventCount specified but not reached: throw — unless maxEvents stopped the wait first.
+        if (!maxEventsReached && finalEventCount.HasValue && selected.FinalEventCount < thresholdCount)
             throw new BgapiWaitEventException(selector, selected);
-        }
 
-    Done:
-        ReEnqueueIgnored(ignoredEvents);
         return selected;
     }
+
+    private enum Scan
+    {
+        /// <summary>The event was selected (or <c>takeIgnored</c>) and removed from the queue; <c>message</c> is set.</summary>
+        Taken,
+        /// <summary>The event stays for other waiters — the selector ignored it, or another waiter took it first.</summary>
+        Skipped,
+        /// <summary>Nothing past the cursor is left to examine; <c>arrival</c> is the ticket to wait on.</summary>
+        Exhausted,
+    }
+
+    /// <summary>
+    /// Examines the one queued event past <paramref name="cursor"/>, advancing the cursor past it.
+    /// One candidate per call, so the caller can check its deadline and token between candidates.
+    /// </summary>
+    private Scan ScanNext(
+        EventSelector selector,
+        BgapiEventList selected,
+        bool takeIgnored,
+        ref long cursor,
+        out BgapiMessage? message,
+        out EventCategory category,
+        out TaskCompletionSource<bool>? arrival)
+    {
+        QueuedEvent candidate;
+        lock (_gate)
+        {
+            int i = IndexOfFirstAfter(cursor);
+            if (i >= _events.Count)
+            {
+                message = null;
+                category = EventCategory.Ignore;
+                arrival = _arrival;
+                return Scan.Exhausted;
+            }
+            candidate = _events[i];
+        }
+
+        cursor = candidate.Seq;
+        message = null;
+        arrival = null;
+
+        // Selector code runs with the lock released: a slow CallableSelector must never stall
+        // the reader thread's Enqueue.
+        category = selector.Categorize(candidate.Message, selected);
+        if (category == EventCategory.Ignore && !takeIgnored)
+            return Scan.Skipped;
+
+        lock (_gate)
+        {
+            // Another waiter may have taken it since the scan; then it was never ours.
+            if (!RemoveBySeq(candidate.Seq))
+                return Scan.Skipped;
+        }
+
+        message = candidate.Message;
+        return Scan.Taken;
+    }
+
+    /// <summary>Index of the first queued event with Seq greater than <paramref name="seq"/>. Caller holds the lock.</summary>
+    private int IndexOfFirstAfter(long seq)
+    {
+        int lo = 0, hi = _events.Count;
+        while (lo < hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (_events[mid].Seq <= seq) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    /// <summary>Removes the event with exactly this Seq, if still queued. Caller holds the lock.</summary>
+    private bool RemoveBySeq(long seq)
+    {
+        int i = IndexOfFirstAfter(seq - 1);
+        if (i < _events.Count && _events[i].Seq == seq)
+        {
+            _events.RemoveAt(i);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Blocks until the ticket completes (an event was enqueued), the remaining time runs out
+    /// (returns false), or <paramref name="ct"/> is cancelled (throws OperationCanceledException).
+    /// <see cref="Timeout.InfiniteTimeSpan"/> waits without a bound.
+    /// </summary>
+    private static bool WaitForArrival(TaskCompletionSource<bool> arrival, TimeSpan remaining, CancellationToken ct)
+    {
+        var ms = remaining == Timeout.InfiniteTimeSpan
+            ? Timeout.Infinite
+            : (int)Math.Min(int.MaxValue, Math.Ceiling(remaining.TotalMilliseconds));
+        return arrival.Task.Wait(ms, ct);
+    }
+
+    /// <summary>The earlier of two bounds; <see cref="Timeout.InfiniteTimeSpan"/> counts as no bound.</summary>
+    private static TimeSpan Earlier(TimeSpan a, TimeSpan b)
+    {
+        if (a == Timeout.InfiniteTimeSpan) return b;
+        if (b == Timeout.InfiniteTimeSpan) return a;
+        return a < b ? a : b;
+    }
+
+    private static TimeSpan Remaining(TimeSpan budget, Stopwatch clock) =>
+        budget == Timeout.InfiniteTimeSpan ? budget : budget - clock.Elapsed;
+
+    private static bool Expired(TimeSpan remaining) =>
+        remaining != Timeout.InfiniteTimeSpan && remaining <= TimeSpan.Zero;
 
     /// <summary>
     /// Retry a command until expected events are received. Ports Python BGLibExt.retry_until.
@@ -404,21 +573,14 @@ public sealed class BgapiEventQueue
         return selectedEvents;
     }
 
-    /// <summary>
-    /// Re-enqueue ignored events so they aren't lost.
-    /// </summary>
-    private void ReEnqueueIgnored(List<BgapiMessage> ignoredEvents)
-    {
-        foreach (var evt in ignoredEvents)
-        {
-            _queue.Enqueue(evt);
-            _signal.Release();
-        }
-    }
-
+    /// <summary>Drops every retained event and starts a new drop-warning episode.</summary>
     public void Clear()
     {
-        while (_queue.TryDequeue(out _)) { }
+        lock (_gate)
+        {
+            _events.Clear();
+            _dropLogged = false;
+        }
     }
 }
 

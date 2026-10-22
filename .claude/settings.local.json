@@ -31,5 +31,16 @@
       "WebFetch(domain:api.github.com)",
       "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --env-filter ':*)"
     ]
+  },
+  "skillOverrides": {
+    "memos-shape-requirement": "off",
+    "memos-discover-standards": "off",
+    "memos-glossary": "off",
+    "memos-remember": "off",
+    "agent-os:shape-spec": "off",
+    "agent-os:discover-standards": "off",
+    "agent-os:index-standards": "off",
+    "agent-os:inject-standards": "off",
+    "agent-os:plan-product": "off"
   }
 }

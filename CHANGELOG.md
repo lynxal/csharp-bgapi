@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-22
+
+### Changed
+
+- The first rejected header of a serial resync episode is logged at Warning (was Debug), beside the drop warning it explains, so a production log shows what was dropped and not only how many bytes.
+
+### Fixed
+
+- `BgapiConnector.ReadMessage` lost bytes on Linux when they arrived as its read timed out: .NET's Unix `SerialStream` reads the fd into a timed-out request and then drops the bytes. The connector now keeps one read in flight and never cancels it — the timeout bounds the wait, and a late read is collected by the next poll.
+
 ## [0.2.0] - 2026-09-02
 
 ### Added

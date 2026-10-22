@@ -29,7 +29,9 @@ public sealed class BgapiConnector : IDisposable
     private readonly ILogger _logger;
     private IReadOnlySet<byte>? _knownDeviceIds;
     private readonly byte[] _rxBuffer = new byte[RxBufferCapacity];
-    private readonly byte[] _readChunk = new byte[ReadChunkSize];
+    // The read in flight against the open port; replaced on every Open. See PendingRead for why a
+    // timed-out read is left pending instead of cancelled.
+    private PendingRead? _pendingRead;
     private int _rxCount;
     private long _droppedByteCount;
     // Stopwatch timestamp at which the header now at the front of the accumulator was first seen
@@ -127,6 +129,8 @@ public sealed class BgapiConnector : IDisposable
         lock (_receiveLock)
         {
             _port = port;
+            _pendingRead?.Abandon();
+            _pendingRead = new PendingRead(port.BaseStream, ReadChunkSize);
             _rxCount = 0;
             _candidateSince = null;
             _resyncLogged = false;
@@ -174,6 +178,10 @@ public sealed class BgapiConnector : IDisposable
     /// the next call parsed payload bytes as a header. Combined with a resync that checked only the
     /// device-id nibble, that produced fabricated frames whose bogus payload length swallowed real
     /// responses (Hub firmware job 158, block 192, 2026-09-01).
+    ///
+    /// The timeout bounds this call's wait, not the read: a read still pending when it expires stays
+    /// pending for the next call. Cancelling it instead lost whatever bytes landed as the timeout fired
+    /// (Hub firmware job 196, block 433, 2026-10-22 — see <see cref="PendingRead"/>).
     /// </summary>
     public BgapiMessage? ReadMessage(BgapiProtocol protocol, TimeSpan timeout)
     {
@@ -189,12 +197,19 @@ public sealed class BgapiConnector : IDisposable
             var buffered = TakeBufferedFrame(protocol);
             if (buffered is not null) return buffered;
 
-            int read;
+            ReadOnlyMemory<byte>? received;
             try
             {
-                read = _port.Read(_readChunk, 0, _readChunk.Length);
+                received = _pendingRead!.TryTake(timeout);
             }
             catch (TimeoutException)
+            {
+                // A driver that ends a read on its own timeout (Windows applies ReadTimeout to the
+                // overlapped read) completed with nothing; the next call starts a fresh one.
+                received = null;
+            }
+
+            if (received is null)
             {
                 _logger.LogTrace("ReadMessage timed out (expected in polling loop)");
                 // Still give a stalled candidate its chance to expire: a frame whose payload never
@@ -202,7 +217,7 @@ public sealed class BgapiConnector : IDisposable
                 return TakeBufferedFrame(protocol);
             }
 
-            AppendReceived(_readChunk.AsSpan(0, read));
+            AppendReceived(received.Value.Span);
 
             return TakeBufferedFrame(protocol);
         }
@@ -316,12 +331,18 @@ public sealed class BgapiConnector : IDisposable
     /// XAPI simply does not define — the version-skew case, which is otherwise indistinguishable
     /// from junk. Caller must hold <see cref="_receiveLock"/>.
     /// </summary>
+    /// <remarks>
+    /// The first rejection of a resync episode logs at Warning, beside the drop warning it explains;
+    /// the rest at Debug. At Debug only, a production capture showed that bytes were dropped but never
+    /// what they were (Hub firmware job 196, 2026-10-22: "dropped 3 byte(s)" and nothing else).
+    /// </remarks>
     private void LogRejectedHeader()
     {
-        if (!_logger.IsEnabled(LogLevel.Debug) || _rxCount < BgapiHeader.Size) return;
+        var level = _resyncLogged ? LogLevel.Debug : LogLevel.Warning;
+        if (!_logger.IsEnabled(level) || _rxCount < BgapiHeader.Size) return;
 
         var rejected = BgapiHeader.Parse(_rxBuffer);
-        _logger.LogDebug(
+        _logger.Log(level,
             "Serial resync rejected header: isEvent={IsEvent} dev={Dev} cls={Cls} idx={Idx} payloadLen={PayloadLen}",
             rejected.IsEvent, rejected.DeviceId, rejected.ClassIndex, rejected.CommandIndex, rejected.PayloadLength);
     }

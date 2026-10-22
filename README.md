@@ -30,7 +30,7 @@ BgapiDevice (main entry point)
 - **BgapiDevice** orchestrates the connector, protocol, and event queue. It runs a background reader thread that dispatches responses and events.
 - **BgapiConnector** handles raw serial communication with thread-safe send/receive locks.
 - **BgapiProtocol** encodes commands and decodes messages using XAPI XML definitions.
-- **BgapiEventQueue** provides `WaitEvents` (selector-based event matching) and `RetryUntilAsync` (command retry with event confirmation).
+- **BgapiEventQueue** provides `WaitEvents` (selector-based event matching) and `RetryUntilAsync` (command retry with event confirmation). A wait takes only the events its selector selects; everything else stays queued, in arrival order, for other waiters. Unclaimed events are retained up to `MaxQueuedEvents`, after which the oldest is dropped and counted on `DroppedEventCount`.
 
 ## Prerequisites
 
@@ -101,6 +101,7 @@ All tunable parameters are exposed via `CsharpBgapiOptions`:
 | `ReaderLoopReadTimeoutMs` | 100 | Read timeout for background reader loop (ms) |
 | `StopReaderTimeoutSeconds` | 2.0 | Timeout for stopping the reader thread |
 | `WaitEventsDefaultMaxTimeSeconds` | 10.0 | Default max time for WaitEvents |
+| `MaxQueuedEvents` | 1024 | How many events the queue retains for `WaitEvents` consumers that have not taken them yet; beyond it the oldest unclaimed event is dropped |
 | `RetryMax` | 5 | Max outer retries in RetryUntilAsync |
 | `RetryIntervalSeconds` | 1.0 | Interval between outer retries |
 | `RetryCmdMax` | 6 | Max command-level retries for transient errors |

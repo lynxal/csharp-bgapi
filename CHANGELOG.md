@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - Unreleased
+
+### Added
+
+- `WaitEventsAsync` and `WaitEventAsync` on `BgapiEventQueue` and `BgapiDevice`: the same parameters, stop conditions and exceptions as `WaitEvents` and `WaitEvent`, but the wait for the next event is awaited instead of blocking a thread. `WaitEvents` still blocks the caller's own thread and nothing else.
+
+### Changed
+
+- `RetryUntilAsync` no longer holds a thread while it waits for events. It waited through the blocking `WaitEvents`, so with a command that completed synchronously it held the caller's thread for the whole `RetryInterval` of every attempt before returning a task.
+
+### Fixed
+
+- A wait woken by an event that arrived in time now takes that event even when the waiter resumes after its deadline. It used to stop at the deadline and leave the event queued, so `RetryUntilAsync` reported a timeout and re-sent a command whose reply had already arrived.
+- A wait whose deadline was overrun by exactly 1 ms no longer waits without a bound. The overrun equalled `Timeout.InfiniteTimeSpan`, so the wait lasted until the next event arrived, and `GetEvent` on a quiet bus never returned.
+
 ## [1.0.0] - Unreleased
 
 First stable release. From here the public API follows Semantic Versioning: breaking changes wait for 2.0.0.

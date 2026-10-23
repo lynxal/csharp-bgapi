@@ -454,6 +454,34 @@ public sealed class BgapiDevice : IDisposable
             softFinalEventProcTime, keepAllEvents, paramSubs, selectedEvents, ct);
     }
 
+    public Task<BgapiEventList> WaitEventAsync(
+        EventSelector selector,
+        TimeSpan timeout,
+        Dictionary<string, object>? paramSubs = null,
+        CancellationToken ct = default)
+    {
+        return _eventQueue.WaitEventAsync(selector, timeout, paramSubs, ct);
+    }
+
+    public Task<BgapiEventList> WaitEventsAsync(
+        EventSelector selector,
+        TimeSpan timeout,
+        int maxEvents = int.MaxValue,
+        TimeSpan? maxTime = null,
+        bool resetTimeoutOnEvent = false,
+        int? finalEventCount = 1,
+        int? softFinalEventCount = null,
+        TimeSpan? softFinalEventProcTime = null,
+        bool keepAllEvents = false,
+        Dictionary<string, object>? paramSubs = null,
+        BgapiEventList? selectedEvents = null,
+        CancellationToken ct = default)
+    {
+        return _eventQueue.WaitEventsAsync(selector, timeout, maxEvents, maxTime,
+            resetTimeoutOnEvent, finalEventCount, softFinalEventCount,
+            softFinalEventProcTime, keepAllEvents, paramSubs, selectedEvents, ct);
+    }
+
     public Task<BgapiEventList> RetryUntilAsync(
         Func<Task<BgapiCommandResponse>> command,
         EventSelector? eventSelector,

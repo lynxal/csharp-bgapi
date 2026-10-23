@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/examples/">
     <Project Path="examples/BasicUsage/BasicUsage.csproj" />
+    <Project Path="examples/ReleaseValidation/ReleaseValidation.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/CsharpBgapi/CsharpBgapi.csproj" />

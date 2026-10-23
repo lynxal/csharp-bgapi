@@ -19,7 +19,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
-            9.0.x
             10.0.x
 
       - name: Compute version
@@ -28,8 +27,24 @@ jobs:
           if DESC=$(git describe --tags --match "v*" HEAD 2>/dev/null); then
             if [[ "$DESC" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
               VERSION="${BASH_REMATCH[1]}"
-            elif [[ "$DESC" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-g ]]; then
-              VERSION="${BASH_REMATCH[1]}-ci.${BASH_REMATCH[2]}"
+            elif [[ "$DESC" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)-g ]]; then
+              TAG="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+              NEXT_PATCH="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+              # A prerelease of X.Y.Z sorts below X.Y.Z, so a build past vX.Y.Z must not reuse X.Y.Z
+              # as its base: it used to publish X.Y.Z-ci.N, which looks older than the X.Y.Z release
+              # it follows. The base is the csproj's AssemblyVersion when it is already past the tag
+              # (the next planned release), else the next patch.
+              ASSEMBLY=$(grep -oP '(?<=<AssemblyVersion>)[^<]+' src/CsharpBgapi/CsharpBgapi.csproj)
+              if [[ "$ASSEMBLY" != "$TAG" && "$(printf '%s\n' "$TAG" "$ASSEMBLY" | sort -V | tail -n 1)" == "$ASSEMBLY" ]]; then
+                BASE="$ASSEMBLY"
+              else
+                BASE="$NEXT_PATCH"
+              fi
+              # N is the total commit count, as before any tag existed, not the height from the tag.
+              # The height restarts at every new tag, so while the base is AssemblyVersion a tag
+              # landing on main (a hotfix, or the first tag after builds already published by count)
+              # put later builds below earlier ones, or repeated a version --skip-duplicate then dropped.
+              VERSION="${BASE}-ci.$(git rev-list --count HEAD)"
             else
               echo "::error::Unexpected git describe output: $DESC"
               exit 1
@@ -68,6 +83,18 @@ jobs:
       - name: Pack
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: dotnet pack src/CsharpBgapi/CsharpBgapi.csproj --no-build --configuration Release --output ./artifacts /p:Version=${{ steps.version.outputs.version }}
+
+      - name: Validate package consumers
+        run: python3 scripts/package-smoke.py --version '${{ steps.version.outputs.version }}' --sdk "$(dotnet --version)" --skip-build
+
+      - name: Upload package validation evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: package-validation
+          path: |
+            artifacts/validation/packages/manifest.json
+            artifacts/validation/packages/command-*.log
 
       - name: Push to NuGet
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

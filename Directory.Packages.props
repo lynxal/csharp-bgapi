@@ -14,5 +14,6 @@
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="FluentAssertions" Version="8.11.0" />
     <PackageVersion Include="coverlet.collector" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
   </ItemGroup>
 </Project>

@@ -13,6 +13,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="NSubstitute" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="FluentAssertions" />
     <PackageReference Include="coverlet.collector">
       <PrivateAssets>all</PrivateAssets>
@@ -22,6 +23,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CsharpBgapi\CsharpBgapi.csproj" />
+    <Compile Include="../../examples/ReleaseValidation/SimulatedConnection.cs" Link="Validation/SimulatedConnection.cs" />
+    <Compile Include="../../examples/ReleaseValidation/Wire.cs" Link="Validation/Wire.cs" />
   </ItemGroup>
 
 </Project>

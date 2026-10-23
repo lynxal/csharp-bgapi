@@ -14,7 +14,7 @@ Ported from the official Python [pyBGAPI](https://github.com/SiliconLabs/pybgapi
 
 - **Modern BGAPI v3+** -- targets the current EFR32 NCP platform, not the discontinued Bluegiga/BLED112 hardware
 - **XAPI-driven** -- protocol definitions are loaded from Silicon Labs' own XML API files, so the library stays current with new firmware versions
-- **.NET 9.0+ / .NET 10.0+** -- built for modern .NET with dependency injection, async/await, and `IOptions<T>` configuration
+- **.NET 10.0+** -- built for modern .NET with dependency injection, async/await, and `IOptions<T>` configuration
 - **Production-ready** -- retry logic, event selectors, thread-safe serial I/O, and configurable timeouts
 - **Drop-in NuGet package** -- `dotnet add package CsharpBgapi` with built-in Bluetooth and Bluetooth Mesh XAPI definitions included
 
@@ -28,13 +28,13 @@ BgapiDevice (main entry point)
 ```
 
 - **BgapiDevice** orchestrates the connector, protocol, and event queue. It runs a background reader thread that dispatches responses and events.
-- **BgapiConnector** handles raw serial communication with thread-safe send/receive locks.
+- **BgapiConnector** (internal) handles raw serial communication with thread-safe send/receive locks.
 - **BgapiProtocol** encodes commands and decodes messages using XAPI XML definitions.
-- **BgapiEventQueue** provides `WaitEvents` (selector-based event matching) and `RetryUntilAsync` (command retry with event confirmation).
+- **BgapiEventQueue** provides `WaitEvents` (selector-based event matching) and `RetryUntilAsync` (command retry with event confirmation). A wait takes only the events its selector selects; everything else stays queued, in arrival order, for other waiters. Unclaimed events are retained up to `MaxQueuedEvents`, after which the oldest is dropped and counted on `DroppedEventCount`.
 
 ## Prerequisites
 
-- **.NET 9.0** or later
+- **.NET 10.0** or later
 - **Silicon Labs NCP hardware** (e.g., EFR32 series with Bluetooth/Bluetooth Mesh firmware)
 - **Silicon Labs Gecko SDK** (optional -- only needed if you want custom XAPI files instead of the built-in defaults)
 
@@ -101,6 +101,7 @@ All tunable parameters are exposed via `CsharpBgapiOptions`:
 | `ReaderLoopReadTimeoutMs` | 100 | Read timeout for background reader loop (ms) |
 | `StopReaderTimeoutSeconds` | 2.0 | Timeout for stopping the reader thread |
 | `WaitEventsDefaultMaxTimeSeconds` | 10.0 | Default max time for WaitEvents |
+| `MaxQueuedEvents` | 1024 | How many events the queue retains for `WaitEvents` consumers that have not taken them yet; beyond it the oldest unclaimed event is dropped |
 | `RetryMax` | 5 | Max outer retries in RetryUntilAsync |
 | `RetryIntervalSeconds` | 1.0 | Interval between outer retries |
 | `RetryCmdMax` | 6 | Max command-level retries for transient errors |
@@ -193,7 +194,6 @@ device.Subscribe("btmesh_evt_vendor_model_receive", message =>
 | Class | Responsibility |
 |-------|---------------|
 | `BgapiDevice` | Main entry point -- open/close, send commands, wait events, subscribe |
-| `BgapiConnector` | Serial port I/O with framing and device ID validation |
 | `BgapiProtocol` | BGAPI message encoding/decoding |
 | `BgapiEventQueue` | Event queue with selector-based waiting and retry logic |
 | `XapiDefinitions` | XAPI XML definition loading and lookup |

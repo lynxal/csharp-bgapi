@@ -24,17 +24,38 @@ public sealed class BgapiDevice : IDisposable
     private readonly TimeSpan _readerLoopReadTimeout;
     private readonly TimeSpan _stopReaderTimeout;
     private readonly SemaphoreSlim _commandLock = new(1, 1);
+    private readonly Lock _lifecycleLock = new();
+    // For each header with a written command whose answer never came (it timed out, or its caller
+    // stopped waiting): the numbers of the first and last such send. That answer can still arrive
+    // and would complete a repeat of the command, because a BGAPI response identifies its command
+    // only by header. First is a lower bound once a fence has been answered ambiguously; see
+    // RecordAnswered. One entry per header, so an outage of any length keeps it small. Guarded by
+    // _commandLock, as is _sends.
+    private readonly Dictionary<(byte Device, byte Class, byte Command), (long First, long Last)> _unanswered = [];
+    private long _sends;
+    // Side-effect-free commands that drain the NCP before such a repeat. Two, so that a repeat of
+    // one is fenced by the other.
+    private static readonly (string Api, string Class, string Command)[] FenceCommands =
+        [("bt", "system", "hello"), ("bt", "system", "get_version")];
     private readonly ConcurrentDictionary<string, List<Action<BgapiMessage>>> _eventHandlers = new();
     // volatile: written by the command thread, read by the reader thread
     private volatile PendingCommand? _pendingCommand;
     private CancellationTokenSource? _readerCts;
     private Thread? _readerThread;
     private bool _disposed;
+    internal Action<CancellationTokenSource, TimeSpan> ScheduleResponseTimeout { get; set; } =
+        static (source, timeout) => source.CancelAfter(timeout);
 
     public BgapiEventQueue EventQueue => _eventQueue;
     public BgapiProtocol Protocol => _protocol;
     public XapiDefinitions Definitions => _definitions;
     public bool IsOpen => _connector.IsOpen;
+
+    /// <summary>
+    /// Total bytes discarded while resyncing the serial stream since the port was opened. A non-zero
+    /// and growing value means the link is losing bytes.
+    /// </summary>
+    public long DroppedByteCount => _connector.DroppedByteCount;
 
     /// <summary>
     /// Default timeout for waiting for command responses.
@@ -44,27 +65,31 @@ public sealed class BgapiDevice : IDisposable
     public BgapiDevice() : this((ILogger?)null) { }
 
     public BgapiDevice(ILogger? logger)
-    {
-        var options = Options.Create(new CsharpBgapiOptions());
-        _config = options.Value;
-        _logger = logger ?? NullLogger.Instance;
-        _definitions = new XapiDefinitions();
-        _protocol = new BgapiProtocol(_definitions);
-        _connector = new BgapiConnector(options, _logger);
-        _eventQueue = new BgapiEventQueue(options, _logger);
-        ResponseTimeout = TimeSpan.FromSeconds(_config.ResponseTimeoutSeconds);
-        _readerLoopReadTimeout = TimeSpan.FromMilliseconds(_config.ReaderLoopReadTimeoutMs);
-        _stopReaderTimeout = TimeSpan.FromSeconds(_config.StopReaderTimeoutSeconds);
-    }
+        : this(Options.Create(new CsharpBgapiOptions()), logger ?? NullLogger.Instance) { }
 
-    public BgapiDevice(IOptions<CsharpBgapiOptions> options, ILoggerFactory loggerFactory)
+    // loggerFactory is optional, since a host may register no logging. AddCsharpBgapi calls this
+    // constructor itself. Left to DI, a host with no ILoggerFactory got BgapiDevice(ILogger?), which
+    // builds default options, so the configure delegate was silently ignored.
+    public BgapiDevice(IOptions<CsharpBgapiOptions> options, ILoggerFactory? loggerFactory = null)
+        : this(options,
+            (loggerFactory ??= NullLoggerFactory.Instance).CreateLogger<BgapiDevice>(),
+            new BgapiConnector(options, loggerFactory.CreateLogger<BgapiConnector>()),
+            new BgapiEventQueue(options, loggerFactory.CreateLogger<BgapiEventQueue>())) { }
+
+    internal BgapiDevice(IOptions<CsharpBgapiOptions> options, BgapiConnector connector, ILogger? logger = null)
+        : this(options, logger ?? NullLogger.Instance, connector) { }
+
+    // Every constructor ends here, so each field is assigned once. The internal one used to chain to
+    // the public one and then overwrite the connector and queue that constructor had just built.
+    private BgapiDevice(IOptions<CsharpBgapiOptions> options, ILogger logger,
+        BgapiConnector? connector = null, BgapiEventQueue? eventQueue = null)
     {
         _config = options.Value;
-        _logger = loggerFactory.CreateLogger<BgapiDevice>();
+        _logger = logger;
         _definitions = new XapiDefinitions();
         _protocol = new BgapiProtocol(_definitions);
-        _connector = new BgapiConnector(options, loggerFactory.CreateLogger<BgapiConnector>());
-        _eventQueue = new BgapiEventQueue(options, loggerFactory.CreateLogger<BgapiEventQueue>());
+        _connector = connector ?? new BgapiConnector(options, logger);
+        _eventQueue = eventQueue ?? new BgapiEventQueue(options, logger);
         ResponseTimeout = TimeSpan.FromSeconds(_config.ResponseTimeoutSeconds);
         _readerLoopReadTimeout = TimeSpan.FromMilliseconds(_config.ReaderLoopReadTimeoutMs);
         _stopReaderTimeout = TimeSpan.FromSeconds(_config.StopReaderTimeoutSeconds);
@@ -99,18 +124,56 @@ public sealed class BgapiDevice : IDisposable
         _connector.SetKnownDeviceIds(_definitions.GetKnownDeviceIds());
     }
 
+    /// <summary>
+    /// Every serial port name the machine reports. No vendor filtering is applied — picking the
+    /// NCP is the caller's job.
+    /// </summary>
+    public static string[] FindPorts() => BgapiConnector.FindPorts();
+
+    /// <summary>
+    /// Opens the serial port and starts the background reader.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The device is already open, or the previous
+    /// session's reader is still running because a subscriber callback has not returned.</exception>
     public void Open(string portName, int baudRate = 0, Handshake handshake = Handshake.None)
     {
-        _logger.LogInformation("BgapiDevice opening on {PortName}", portName);
-        _connector.Open(portName, baudRate, handshake);
-        StartReader();
+        // Serialized with Close and Dispose. Two concurrent callers used to both pass the IsOpen
+        // check below, both open a port, and the second overwrote the first's port and reader.
+        lock (_lifecycleLock)
+        {
+            // A second Open used to go through: the connector replaced its port without closing the
+            // old one, and StartReader started a second reader thread over the same connector, so two
+            // readers raced for frames and the first one's thread and token source were never
+            // stopped. Checked on the port rather than on the reader, so a device whose port went
+            // away underneath it (the reader then exits on its own) can still be opened again.
+            if (IsOpen)
+                throw new InvalidOperationException("BgapiDevice is already open. Call Close() before opening it again.");
+
+            // The reader of a port that went away without Close() may still be inside ReadMessage.
+            // StartReader used to overwrite its thread and token source without stopping it, so it
+            // carried on beside the new reader.
+            StopReader();
+
+            // A reader held past the join by a subscriber callback used to be forgotten, and once
+            // the callback returned it dispatched the old port's message beside the new reader.
+            if (_readerThread is not null)
+                throw new InvalidOperationException(
+                    "The previous session's reader is still running, most likely inside a subscriber callback that has not returned. Retry Open once it has.");
+
+            _logger.LogInformation("BgapiDevice opening on {PortName}", portName);
+            _connector.Open(portName, baudRate, handshake);
+            StartReader();
+        }
     }
 
     public void Close()
     {
-        _logger.LogInformation("BgapiDevice closing");
-        StopReader();
-        _connector.Close();
+        lock (_lifecycleLock)
+        {
+            _logger.LogInformation("BgapiDevice closing");
+            StopReader();
+            _connector.Close();
+        }
     }
 
     /// <summary>
@@ -118,6 +181,17 @@ public sealed class BgapiDevice : IDisposable
     /// Commands marked as no_return in XAPI return immediately without waiting for a response.
     /// Thread-safe: concurrent calls are serialized via command lock.
     /// </summary>
+    /// <remarks>
+    /// A response identifies its command only by header, so after a command times out, or its caller
+    /// cancels once it was sent, its late answer could complete the next command with the same
+    /// header. Such a repeat is therefore preceded by a side-effect-free fence, bt.system.hello or
+    /// bt.system.get_version, preferring one with no unanswered send of its own: the NCP answers in
+    /// order, so the fence's answer proves the late one has passed. When both have unanswered sends
+    /// (retries through an outage), a fence's answer may be its own header's late one, which proves
+    /// less, so more than one fence can be sent. If a fence goes unanswered, the repeat returns
+    /// <see cref="SlStatus.Timeout"/> without being sent, and the next attempt fences again. An
+    /// answered command whose header had no unanswered send clears the need for a fence.
+    /// </remarks>
     public async Task<BgapiCommandResponse> SendCommandAsync(
         string apiName,
         string className,
@@ -135,64 +209,185 @@ public sealed class BgapiDevice : IDisposable
         await _commandLock.WaitAsync(ct);
         try
         {
+            // Checked once the lock is held, so a caller that was waiting for it when the device
+            // was disposed fails here rather than on the connector.
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
             var data = _protocol.EncodeCommand(apiName, className, commandName, parameters);
 
             if (cmdDef.NoReturn)
             {
+                // The wait for the lock can end as ct is cancelled, and nothing else reads it before
+                // this write. ExchangeAsync reads it before its own.
+                ct.ThrowIfCancellationRequested();
                 _connector.SendCommand(data);
                 return new BgapiCommandResponse { Status = SlStatus.OK };
             }
 
-            // Set up response TCS before sending to avoid race
-            var tcs = InstallPendingCommand(BgapiHeader.Parse(data));
-
-            try
+            var header = BgapiHeader.Parse(data);
+            // Ends: every answered fence proves a later send answered than the one before it did.
+            while (_unanswered.ContainsKey(Identity(header)))
             {
-                _connector.SendCommand(data);
-
-                // Wait for response with timeout
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeoutCts.CancelAfter(effectiveTimeout);
-
-                BgapiMessage response;
-                try
+                if (ChooseFence(Identity(header)) is not var (fenceName, fence, fenceHeader))
                 {
-                    response = await tcs.Task.WaitAsync(timeoutCts.Token);
+                    _logger.LogWarning(
+                        "No bt.system fence command is loaded; sending {Api}.{Class}.{Command} although an earlier one's answer may still arrive",
+                        apiName, className, commandName);
+                    break;
                 }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+
+                _logger.LogInformation("Sending {Fence} to drain the answer of an unanswered {Api}.{Class}.{Command}",
+                    fenceName, apiName, className, commandName);
+                if (await ExchangeAsync(fence, fenceHeader, effectiveTimeout, ct) is null)
                 {
-                    _logger.LogWarning("Command {Api}.{Class}.{Command} timed out after {Timeout}ms",
-                        apiName, className, commandName, effectiveTimeout.TotalMilliseconds);
+                    _logger.LogWarning(
+                        "Command {Api}.{Class}.{Command} not sent: an earlier one with its header is unanswered and the NCP did not answer {Fence}",
+                        apiName, className, commandName, fenceName);
                     return new BgapiCommandResponse { Status = SlStatus.Timeout };
                 }
-
-                // Extract status by scanning for errorcode-typed parameter
-                var status = SlStatus.OK;
-                var errorCodeParam = BgapiProtocol.FindErrorCodeParamName(cmdDef);
-                if (errorCodeParam is not null &&
-                    response.Parameters is not null &&
-                    response.TryGetParameter<ushort>(errorCodeParam, out var result))
-                {
-                    status = SlStatusExtensions.FromUint(result);
-                }
-
-                return new BgapiCommandResponse
-                {
-                    Status = status,
-                    Parameters = response.Parameters,
-                    RawMessage = response
-                };
             }
-            finally
+
+            var response = await ExchangeAsync(data, header, effectiveTimeout, ct);
+            if (response is null)
             {
-                ClearPendingCommand();
+                _logger.LogWarning("Command {Api}.{Class}.{Command} timed out after {Timeout}ms",
+                    apiName, className, commandName, effectiveTimeout.TotalMilliseconds);
+                return new BgapiCommandResponse { Status = SlStatus.Timeout };
             }
+
+            return new BgapiCommandResponse
+            {
+                Status = ResponseStatus(cmdDef, response),
+                Parameters = response.Parameters,
+                RawMessage = response
+            };
         }
         finally
         {
             _commandLock.Release();
         }
     }
+
+    /// <summary>
+    /// Writes one command and waits for its response: null when it times out, OperationCanceledException
+    /// when <paramref name="ct"/> is cancelled, without writing it when it already was. Caller holds
+    /// <see cref="_commandLock"/>.
+    /// </summary>
+    private async Task<BgapiMessage?> ExchangeAsync(byte[] data, BgapiHeader header, TimeSpan timeout, CancellationToken ct)
+    {
+        // The token used to be read only by the wait, after the write. Cancelled once a fence had
+        // been answered but before its wait resumed, the repeat was still written.
+        ct.ThrowIfCancellationRequested();
+        long send = _sends++;
+        // Set up response TCS before sending to avoid race
+        var tcs = InstallPendingCommand(header);
+
+        try
+        {
+            _connector.SendCommand(data);
+
+            // Wait for response with timeout. The timeout cancels the TCS itself, so the answer and
+            // the timeout race on one completion and exactly one wins. Cancelling only a WaitAsync
+            // could end the wait although the reader had completed the TCS: that answer went
+            // unaccounted, and when it was the late one of an earlier fence the send's own late
+            // answer went unrecorded and later completed another command.
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            using var cancelOnTimeout = timeoutCts.Token.Register(
+                static state => ((TaskCompletionSource<BgapiMessage>)state!).TrySetCanceled(), tcs);
+            ScheduleResponseTimeout(timeoutCts, timeout);
+
+            try
+            {
+                var response = await tcs.Task;
+                RecordAnswered(Identity(header), send);
+                return response;
+            }
+            catch (OperationCanceledException)
+            {
+                // Its answer may still arrive, and would complete a repeat of this command. One
+                // routed as the timeout won is dropped by the reader, so this is always so.
+                RecordUnanswered(Identity(header), send);
+                if (ct.IsCancellationRequested)
+                    throw;
+                return null;
+            }
+        }
+        finally
+        {
+            ClearPendingCommand();
+        }
+    }
+
+    /// <summary>
+    /// The fence to send before repeating a command with header <paramref name="repeat"/>: a fence
+    /// command with another header, preferring one with no unanswered send (its answer is its own,
+    /// so it proves every earlier send), else the one whose first unanswered send is latest. Null
+    /// when no fence command is loaded.
+    /// </summary>
+    /// <remarks>
+    /// A fence with unanswered sends of its own header used to be ruled out. After a few retries
+    /// through an outage both were, and the repeat returned Timeout unsent from then on, even once
+    /// the NCP answered again.
+    /// </remarks>
+    private (string Name, byte[] Data, BgapiHeader Header)? ChooseFence((byte, byte, byte) repeat)
+    {
+        (string, byte[], BgapiHeader)? best = null;
+        long bestFirst = long.MinValue;
+        foreach (var (api, cls, command) in FenceCommands)
+        {
+            byte[] data;
+            try { data = _protocol.EncodeCommand(api, cls, command); }
+            catch (KeyNotFoundException) { continue; }
+
+            var header = BgapiHeader.Parse(data);
+            if (Identity(header) == repeat)
+                continue;
+
+            long first = _unanswered.TryGetValue(Identity(header), out var sends) ? sends.First : long.MaxValue;
+            if (first > bestFirst)
+            {
+                best = ($"{api}.{cls}.{command}", data, header);
+                bestFirst = first;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Accounts for a matched answer to send number <paramref name="send"/>. With no earlier send of
+    /// its header unanswered the answer is its own, and the NCP answers in order, so every earlier
+    /// send has been answered or dropped. Otherwise (only a fence gets here) it may be the late
+    /// answer of the first such send. That still proves every send before that one, and this send
+    /// may yet be answered.
+    /// </summary>
+    private void RecordAnswered((byte, byte, byte) identity, long send)
+    {
+        if (!_unanswered.TryGetValue(identity, out var own))
+        {
+            _unanswered.Clear();
+            return;
+        }
+
+        // own.First is at or before the header's first unanswered send, so any other header's send
+        // numbered up to it came before that send.
+        long proven = own.First;
+        foreach (var (key, sends) in _unanswered.ToArray())
+        {
+            if (key == identity)
+                _unanswered[key] = (proven + 1, send);
+            else if (sends.Last <= proven)
+                _unanswered.Remove(key);
+            else
+                _unanswered[key] = (Math.Max(sends.First, proven + 1), sends.Last);
+        }
+    }
+
+    private void RecordUnanswered((byte, byte, byte) identity, long send) =>
+        _unanswered[identity] = _unanswered.TryGetValue(identity, out var sends) ? (sends.First, send) : (send, send);
+
+    private static (byte Device, byte Class, byte Command) Identity(in BgapiHeader header) =>
+        (header.DeviceId, header.ClassIndex, header.CommandIndex);
 
     /// <summary>
     /// Synchronous convenience wrapper for SendCommandAsync.
@@ -206,6 +401,24 @@ public sealed class BgapiDevice : IDisposable
     {
         return SendCommandAsync(apiName, className, commandName, parameters, timeout, CancellationToken.None)
             .GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// The status a command's response reports: its errorcode-typed return parameter mapped to
+    /// <see cref="SlStatus"/>, <see cref="SlStatus.OK"/> when the command declares no errorcode
+    /// return, or <see cref="SlStatus.Fail"/> when the decoded payload ended before it.
+    /// </summary>
+    internal static SlStatus ResponseStatus(CommandDefinition command, BgapiMessage response)
+    {
+        var errorCodeParam = BgapiProtocol.FindErrorCodeParamName(command);
+        if (errorCodeParam is null)
+            return SlStatus.OK;
+
+        // A payload that ends before the errorcode (a truncated frame, or one resynced out of
+        // junk) used to report OK, and the caller carried on as if the NCP had accepted the command.
+        return response.Parameters is not null && response.TryGetParameter<ushort>(errorCodeParam, out var result)
+            ? SlStatusExtensions.FromUint(result)
+            : SlStatus.Fail;
     }
 
     public BgapiEventList WaitEvent(
@@ -365,8 +578,13 @@ public sealed class BgapiDevice : IDisposable
 
     private void StartReader()
     {
+        // Each reader gets its own token rather than re-reading _readerCts: a reader that outlived
+        // StopReader's join would otherwise pick up the next reader's uncancelled token. The token
+        // is read here, not on the new thread: StopReader may dispose the source before that thread
+        // runs, and CancellationTokenSource.Token then throws, unhandled, and ends the process.
         _readerCts = new CancellationTokenSource();
-        _readerThread = new Thread(ReaderLoop)
+        var token = _readerCts.Token;
+        _readerThread = new Thread(() => ReaderLoop(token))
         {
             IsBackground = true,
             Name = "BgapiReader"
@@ -377,18 +595,26 @@ public sealed class BgapiDevice : IDisposable
     private void StopReader()
     {
         _readerCts?.Cancel();
-        _readerThread?.Join(_stopReaderTimeout);
+
+        // A reader still inside a subscriber callback can outlast the join. It is kept rather than
+        // forgotten, so the next StopReader joins it again and Open refuses to start a second one.
+        if (_readerThread?.Join(_stopReaderTimeout) == false)
+        {
+            _logger.LogWarning("BgapiDevice reader did not stop within {Timeout}s", _stopReaderTimeout.TotalSeconds);
+            return;
+        }
+
         _readerCts?.Dispose();
         _readerCts = null;
         _readerThread = null;
     }
 
-    private void ReaderLoop()
+    private void ReaderLoop(CancellationToken ct)
     {
         _logger.LogDebug("ReaderLoop started");
         try
         {
-            while (_readerCts is { IsCancellationRequested: false } && _connector.IsOpen)
+            while (!ct.IsCancellationRequested && _connector.IsOpen)
             {
                 try
                 {
@@ -403,6 +629,12 @@ public sealed class BgapiDevice : IDisposable
                         message.ClassIndex,
                         message.CommandIndex,
                         message.Header.PayloadLength);
+
+                    // Close cancelled this reader while it was reading: the message belongs to the
+                    // closed session and must reach neither the queue, a pending command nor a
+                    // subscriber. Checking only at the loop head let it through.
+                    if (ct.IsCancellationRequested)
+                        break;
 
                     if (message.IsResponse)
                     {
@@ -438,7 +670,8 @@ public sealed class BgapiDevice : IDisposable
     /// Routes a response message to the in-flight command, discarding responses whose
     /// header identity does not match. Without the identity check, a late response from
     /// a timed-out command A completes the TCS of the next command B with A's payload —
-    /// B then reports a wrong (often falsely successful) result.
+    /// B then reports a wrong (often falsely successful) result. A late response with B's own
+    /// header cannot be told apart here; <see cref="SendCommandAsync"/> fences such a repeat.
     /// </summary>
     internal void HandleResponseMessage(BgapiMessage message)
     {
@@ -461,7 +694,8 @@ public sealed class BgapiDevice : IDisposable
         }
 
         _logger.LogDebug("Completing pending response TCS");
-        pending.Tcs.TrySetResult(message);
+        if (!pending.Tcs.TrySetResult(message))
+            _logger.LogDebug("Dropping response — its command timed out or was cancelled as it arrived");
     }
 
     internal TaskCompletionSource<BgapiMessage> InstallPendingCommand(in BgapiHeader commandHeader)
@@ -479,7 +713,7 @@ public sealed class BgapiDevice : IDisposable
         byte ClassIndex,
         byte CommandIndex);
 
-    private void DispatchToHandlers(BgapiMessage message)
+    internal void DispatchToHandlers(BgapiMessage message)
     {
         if (message.EventName is null)
         {
@@ -521,10 +755,15 @@ public sealed class BgapiDevice : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        Close();
-        _connector.Dispose();
-        _commandLock.Dispose();
+        lock (_lifecycleLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            Close();
+            _connector.Dispose();
+            // _commandLock is deliberately not disposed. A command still holding it would throw from
+            // Release over its own outcome, and callers waiting for it would never be released. It
+            // owns no wait handle while AvailableWaitHandle is never read, so nothing leaks.
+        }
     }
 }

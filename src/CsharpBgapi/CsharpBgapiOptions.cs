@@ -39,6 +39,14 @@ public sealed class CsharpBgapiOptions
     /// <summary>Default max time in seconds for WaitEvents when no maxTime is specified.</summary>
     public double WaitEventsDefaultMaxTimeSeconds { get; set; } = 10.0;
 
+    /// <summary>
+    /// How many events the queue retains for <c>WaitEvents</c> consumers that have not taken them
+    /// yet. Beyond this the oldest unclaimed event is dropped and counted on
+    /// <c>BgapiEventQueue.DroppedEventCount</c>. Waiters are woken as events arrive, so the bound
+    /// only evicts events no consumer was waiting for.
+    /// </summary>
+    public int MaxQueuedEvents { get; set; } = 1024;
+
     /// <summary>Maximum number of outer retries in RetryUntilAsync.</summary>
     public int RetryMax { get; set; } = 5;
 

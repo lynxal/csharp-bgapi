@@ -28,7 +28,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
-            9.0.x
             10.0.x
 
       - name: Restore dependencies
@@ -49,6 +48,18 @@ jobs:
 
       - name: Pack
         run: dotnet pack src/CsharpBgapi/CsharpBgapi.csproj --no-build --configuration Release --output ./artifacts /p:Version=${{ steps.version.outputs.version }}
+
+      - name: Validate package consumers
+        run: python3 scripts/package-smoke.py --version '${{ steps.version.outputs.version }}' --sdk "$(dotnet --version)" --skip-build
+
+      - name: Upload package validation evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: package-validation
+          path: |
+            artifacts/validation/packages/manifest.json
+            artifacts/validation/packages/command-*.log
 
       - name: Push to NuGet
         run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

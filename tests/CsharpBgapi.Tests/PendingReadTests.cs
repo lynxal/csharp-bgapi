@@ -1,4 +1,5 @@
 using CsharpBgapi.Serial;
+using CsharpBgapi.Validation;
 using FluentAssertions;
 using NSubstitute;
 using Xunit;
@@ -103,6 +104,62 @@ public class PendingReadTests
         sut.Abandon();
         sut.TryTake(Short);
 
+        ReadAsyncCalls.Should().Be(2);
+    }
+
+    [Fact]
+    public void Abandon_LateFault_IsObserved()
+    {
+        string marker = "abandoned-read-fault-" + Guid.NewGuid();
+        UnobservedFaults.Raised(marker, () => FaultLate(marker, abandon: true)).Should().BeFalse();
+    }
+
+    // Control for the test above: without Abandon the same fault is reported, so a false there
+    // means Abandon observed it rather than that the check could not see it.
+    [Fact]
+    public void Dropped_LateFaultWithoutAbandon_IsUnobserved()
+    {
+        string marker = "dropped-read-fault-" + Guid.NewGuid();
+        UnobservedFaults.Raised(marker, () => FaultLate(marker, abandon: false)).Should().BeTrue();
+    }
+
+    private static void FaultLate(string marker, bool abandon)
+    {
+        var read = new TaskCompletionSource<int>();
+        var pending = new PendingRead(new SimulatedConnection { ControlledRead = read.Task }, 64);
+        pending.TryTake(TimeSpan.Zero).Should().BeNull();
+        if (abandon) pending.Abandon();
+        read.SetException(new IOException(marker));
+    }
+
+    [Fact]
+    public void Abandon_ReplacementSession_HasIndependentBuffer()
+    {
+        var old = new PendingRead(_stream, 64);
+        old.TryTake(TimeSpan.Zero);
+        var oldRead = _reads.Dequeue();
+        var oldBuffer = _lastBuffer!;
+        old.Abandon();
+        var replacement = new PendingRead(_stream, 64);
+        replacement.TryTake(TimeSpan.Zero);
+        _lastBuffer.Should().NotBeSameAs(oldBuffer);
+        oldBuffer[0] = 99;
+        _lastBuffer![0] = 42;
+        oldRead.SetException(new IOException("abandoned session"));
+        _reads.Dequeue().SetResult(1);
+        replacement.TryTake(TimeSpan.Zero)!.Value.ToArray().Should().Equal(42);
+        _stream.Received(2).ReadAsync(Arg.Any<byte[]>(), 0, 64, CancellationToken.None);
+    }
+
+    [Fact]
+    public void TryTake_ThousandsOfPollTimeouts_StillIssuesOnlyOneUncancelledRead()
+    {
+        var sut = new PendingRead(_stream, 64);
+        for (int i = 0; i < 2000; i++) sut.TryTake(TimeSpan.Zero).Should().BeNull();
+        _stream.Received(1).ReadAsync(Arg.Any<byte[]>(), 0, 64, CancellationToken.None);
+        _reads.Dequeue().SetException(new TimeoutException("driver timeout"));
+        sut.Invoking(p => p.TryTake(TimeSpan.Zero)).Should().Throw<TimeoutException>().WithMessage("driver timeout");
+        sut.TryTake(TimeSpan.Zero).Should().BeNull();
         ReadAsyncCalls.Should().Be(2);
     }
 }

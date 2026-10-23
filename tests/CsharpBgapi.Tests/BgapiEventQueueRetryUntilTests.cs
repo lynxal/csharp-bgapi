@@ -123,6 +123,27 @@ public class BgapiEventQueueRetryUntilTests
         command.Calls.Should().Be(Fast.RetryMax + 1, "each outer attempt re-issues the command before waiting again");
     }
 
+    // RetryUntilAsync is async, but it waited for events through the blocking WaitEvents. With a
+    // command that completes synchronously, the call ran straight into that wait and held the
+    // caller's thread for the whole RetryInterval of every attempt before it returned a task at
+    // all, so an async caller on the thread pool tied up one pool thread per wait in flight.
+
+    [Fact]
+    public async Task RetryUntilAsync_WaitingForEvents_ReturnsATaskWithoutHoldingTheThread()
+    {
+        var queue = new BgapiEventQueue();
+        var command = new ScriptedCommand(Response(SlStatus.OK));
+        var patient = Fast with { RetryMax = 0, RetryInterval = TimeSpan.FromSeconds(5) };
+
+        var retry = queue.RetryUntilAsync(command.Invoke, new NameParamSelector(VendorReceive), patient);
+
+        retry.IsCompleted.Should().BeFalse("the event wait must be awaited, not blocked on before the task is returned");
+        var expected = Event(VendorReceive);
+        queue.Enqueue(expected);
+        (await retry.WaitAsync(TimeSpan.FromSeconds(5))).Should().ContainSingle().Which.Should().BeSameAs(expected);
+        command.Calls.Should().Be(1);
+    }
+
     // RetryUntilAsync passes the command response to WaitEvents as paramSubs so a "$name"
     // constraint can match the value the command just returned. WaitEvents never read them, so the
     // selector kept the literal "$address" and a wait for the reply from the addressed node could

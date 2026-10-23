@@ -23,6 +23,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CsharpBgapi\CsharpBgapi.csproj" />
+    <Compile Include="../../examples/ReleaseValidation/SimulatedConnection.cs" Link="Validation/SimulatedConnection.cs" />
+    <Compile Include="../../examples/ReleaseValidation/Wire.cs" Link="Validation/Wire.cs" />
   </ItemGroup>
 
 </Project>

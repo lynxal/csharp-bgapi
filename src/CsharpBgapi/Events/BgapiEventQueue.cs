@@ -36,6 +36,9 @@ public sealed class BgapiEventQueue
     // lock that found nothing left to examine, so an arrival between that scan and the wait
     // completes the very ticket it is about to wait on.
     private TaskCompletionSource<bool> _arrival = NewTicket();
+    // Validation can pause a signaled waiter before it scans; notification is not a reservation.
+    internal Action? AfterArrival { get; set; }
+    internal Action? BeforeArrival { get; set; }
 
     private readonly record struct QueuedEvent(long Seq, BgapiMessage Message);
 
@@ -231,7 +234,7 @@ public sealed class BgapiEventQueue
             selected.Add(message!);
             if (category == EventCategory.SelectFinal)
             {
-                selected.FinalEventCount++;
+                selected.CountFinal(message!);
                 if (selected.FinalEventCount >= thresholdCount)
                 {
                     thresholdReached = true;
@@ -272,7 +275,7 @@ public sealed class BgapiEventQueue
                     selected.Add(message!);
                     if (category == EventCategory.SelectFinal)
                     {
-                        selected.FinalEventCount++;
+                        selected.CountFinal(message!);
                         if (selected.FinalEventCount >= effectiveFinalCount)
                             break;
                     }
@@ -377,12 +380,15 @@ public sealed class BgapiEventQueue
     /// (returns false), or <paramref name="ct"/> is cancelled (throws OperationCanceledException).
     /// <see cref="Timeout.InfiniteTimeSpan"/> waits without a bound.
     /// </summary>
-    private static bool WaitForArrival(TaskCompletionSource<bool> arrival, TimeSpan remaining, CancellationToken ct)
+    private bool WaitForArrival(TaskCompletionSource<bool> arrival, TimeSpan remaining, CancellationToken ct)
     {
         var ms = remaining == Timeout.InfiniteTimeSpan
             ? Timeout.Infinite
             : (int)Math.Min(int.MaxValue, Math.Ceiling(remaining.TotalMilliseconds));
-        return arrival.Task.Wait(ms, ct);
+        BeforeArrival?.Invoke();
+        var signaled = arrival.Task.Wait(ms, ct);
+        if (signaled) AfterArrival?.Invoke();
+        return signaled;
     }
 
     /// <summary>The earlier of two bounds; <see cref="Timeout.InfiniteTimeSpan"/> counts as no bound.</summary>
@@ -523,6 +529,12 @@ public sealed class BgapiEventQueue
 
             if (!lastCmdFailed)
             {
+                // Resolved like the event selector: matched as written, a "$name" constraint
+                // on the failure event never matched, and a failure was returned as success.
+                var retrySelector = retryEventSelector is not null && paramSubs.Count > 0
+                    ? retryEventSelector.WithParamSubs(paramSubs)
+                    : retryEventSelector;
+
                 // Wait for events
                 prevSelEvtCount = selectedEvents.Count;
                 try
@@ -547,8 +559,15 @@ public sealed class BgapiEventQueue
                         // carries on from it with its final count. It used to restart from a copy
                         // whose count was 0, and a stateful selector, which keeps the events it
                         // already counted, could then never reach finalEventCount.
+                        // Failures the retry event selector matches are dropped first, each with
+                        // the count it took. Kept, as in Python, a failure was never checked, since
+                        // only a wait that completes is: it counted toward finalEventCount, under
+                        // #unique it hid its node's later success, and a failed node could
+                        // complete the result.
                         _logger.LogDebug("Retry {RetryCount}/{RetryMax}: events not complete ({Collected} collected), retrying",
                             retryCount, retryParams.RetryMax, ex.CollectedEvents.Count);
+                        if (retrySelector is not null)
+                            selectedEvents.Drop(e => retrySelector.Categorize(e, []) != EventCategory.Ignore);
                         continue;
                     }
                     _logger.LogWarning("RetryUntilAsync exhausted all {RetryMax} retries", retryParams.RetryMax);
@@ -557,18 +576,20 @@ public sealed class BgapiEventQueue
 
                 // Check retry event selector for recoverable errors
                 var newEvents = selectedEvents.Skip(prevSelEvtCount).ToList();
-                if (retryEventSelector is not null && retryCount < retryParams.RetryMax)
+                if (retrySelector is not null && retryCount < retryParams.RetryMax)
                 {
-                    // Resolved like the event selector: matched as written, a "$name" constraint
-                    // on the failure event never matched, and a failure was returned as success.
-                    var retrySelector = paramSubs.Count > 0 ? retryEventSelector.WithParamSubs(paramSubs) : retryEventSelector;
                     bool hasRetryEvent = newEvents.Any(e =>
                         retrySelector.Categorize(e, []) != EventCategory.Ignore);
 
                     if (hasRetryEvent)
                     {
+                        // A stateful selector's events used to be kept whole, failures included,
+                        // and what they had counted could end the next wait at once. Dropped as
+                        // after a wait that falls short.
                         if (eventSelector!.Stateless)
                             selectedEvents = new BgapiEventList();
+                        else
+                            selectedEvents.Drop(e => retrySelector.Categorize(e, []) != EventCategory.Ignore);
                         continue;
                     }
                 }

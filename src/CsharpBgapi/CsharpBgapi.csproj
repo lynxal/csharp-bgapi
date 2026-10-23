@@ -29,6 +29,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CsharpBgapi.Tests" />
+    <!-- Kept under the package's own CsharpBgapi.* prefix, like the tests: a generic name in the
+         shipped assembly invites a consumer's assembly to match it. Unsigned, the grant is by name only. -->
+    <InternalsVisibleTo Include="CsharpBgapi.ReleaseValidation" />
   </ItemGroup>
 
   <ItemGroup>

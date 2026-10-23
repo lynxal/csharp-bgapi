@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - Unreleased
+
+First stable release. From here the public API follows Semantic Versioning: breaking changes wait for 2.0.0.
+
+### Added
+
+- `BgapiDevice.FindPorts()` and `BgapiDevice.DroppedByteCount`, the two `BgapiConnector` members worth keeping public.
+
+### Changed
+
+- **Breaking:** the package targets `net10.0` only. `net9.0` is dropped; its support ends on 2026-11-10.
+- **Breaking:** `BgapiConnector` is internal. Its `SetKnownDeviceIds` and `ReadMessage` bypass the device's reader thread and command lock, and freezing them under SemVer would rule out reworking the serial layer in 1.x. Use `BgapiDevice.FindPorts()` and `BgapiDevice.DroppedByteCount` instead.
+- **Breaking:** `BgapiDevice.Open` throws `InvalidOperationException` when the device is already open. A second `Open` used to replace the port without closing it and start a second reader thread on the same connector, so two readers raced for frames.
+- CI prerelease packages built after a release tag take the next version as their base (`1.0.1-ci.N` after `v1.0.0`, or the csproj's `AssemblyVersion` when it is already ahead), so they sort above the release they follow. They used to be `X.Y.Z-ci.N`, which SemVer orders below `X.Y.Z`. `N` is the total commit count, not the height from the nearest tag, so a new tag (a hotfix on main, say) no longer restarts it below builds already published.
+
+### Fixed
+
+- `$name` substitution in event selectors never ran. `WaitEvents` accepted `paramSubs` and ignored them, so a constraint such as `"source_address": "$address"` kept the literal string `"$address"` and a `RetryUntilAsync` wait for the event named by the command's response could only time out. `WaitEvents`, `RetryUntilAsync`'s `retryEventSelector` and `EventSelector.Build` given an already-built selector now resolve it against `paramSubs`, and `RetryUntilAsync` keeps the last successful command's values for the waits of later attempts. Substitutions given when the selector was built win over the response's. Selectors subclassed outside the library are matched as written.
+- Building a `NameParamSelector` with `paramSubs` wrote the substituted values into the caller's own `EventParamValues` instance.
+- `NameParamSelector` constraints and `#unique` compared values with boxed `Equals`, which needs the same type and compares arrays by reference: an `int` constraint never matched the `ushort` an event decodes to, and a `bd_addr`, uuid or byte array never matched or deduplicated. Integers now compare by value and byte arrays by content.
+- After a `RetryUntilAsync` wait fell short, the next attempt restarted the final-event count at 0 while keeping the events already counted, so a stateful (`#unique`) selector could never reach `finalEventCount` and every retry failed.
+- A command response whose payload ends before its errorcode reported `SlStatus.OK`; it now reports `SlStatus.Fail`.
+- `AddCsharpBgapi` silently ignored its configure delegate when the host registered no logging: the device fell back to a constructor that builds default options.
+- `BgapiDevice.Close` on a port whose USB device was removed threw and left the port reporting open, so every later `Open` threw until the process restarted. The port is now abandoned and its handle released.
+- `Open` after the port went away without `Close()` left the old reader thread running beside the new one.
+
 ## [0.3.0] - 2026-10-22
 
 ### Added

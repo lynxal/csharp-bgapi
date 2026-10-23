@@ -21,6 +21,14 @@ public abstract class EventSelector
     public abstract bool Stateless { get; }
 
     /// <summary>
+    /// This selector with its <c>$name</c> placeholders filled from <paramref name="paramSubs"/> —
+    /// what <c>WaitEvents</c> matches against when it is given substitutions. A selector with no
+    /// placeholders returns itself. Only the library's own selectors are resolved: a subclass
+    /// defined outside it, and any selector it wraps, is matched as written.
+    /// </summary>
+    internal virtual EventSelector WithParamSubs(Dictionary<string, object> paramSubs) => this;
+
+    /// <summary>
     /// Factory method: auto-constructs an EventSelector from various input types.
     /// Matches Python build_event_selector behavior.
     /// - null -> PassThroughSelector
@@ -38,8 +46,10 @@ public abstract class EventSelector
         if (rawSelector is null)
             return new PassThroughSelector();
 
+        // A built selector used to come back unchanged, so the paramSubs passed with it were
+        // ignored and its "$name" constraints never matched.
         if (rawSelector is EventSelector sel)
-            return sel;
+            return paramSubs is { Count: > 0 } ? sel.WithParamSubs(paramSubs) : sel;
 
         if (rawSelector is string name)
             return new NameParamSelector(name, eventParams, paramSubs: paramSubs);
@@ -81,6 +91,15 @@ public sealed class EventParamValues : List<object>
 public sealed class NameParamSelector : EventSelector
 {
     private readonly Dictionary<string, Dictionary<string, object>> _eventNameDict = new();
+    // The normalized constraints before any $name was replaced, and the substitutions given at
+    // construction. ResolveParamSubs overwrites placeholders in _eventNameDict, so without the
+    // template a selector could be resolved once only: RetryUntilAsync gets new values from every
+    // command response, and the $name constraints used to keep their literal "$name" string and
+    // never match.
+    private readonly Dictionary<string, Dictionary<string, object>> _template = new();
+    private Dictionary<string, object>? _paramSubs;
+    // False when no constraint holds a "$name": WithParamSubs then has nothing to resolve.
+    private bool _hasPlaceholders;
     private bool _stateless = true;
 
     public override bool Stateless => _stateless;
@@ -145,18 +164,28 @@ public sealed class NameParamSelector : EventSelector
 
     private void NormalizeAndResolve(Dictionary<string, object>? paramSubs)
     {
+        // Copied with the caller's comparer: a case-insensitive dictionary resolved "$name" here
+        // and then, copied with the default one, no longer did when WithParamSubs re-resolved it.
+        _paramSubs = paramSubs is not null ? new(paramSubs, paramSubs.Comparer) : null;
+
         foreach (var (evtName, evtParams) in _eventNameDict)
         {
-            // Normalize non-keyword param values to EventParamValues
+            // Normalize non-keyword param values to EventParamValues. A caller's own
+            // EventParamValues is copied as well: ResolveParamSubs writes into the list, and used
+            // to write the substituted values into the caller's instance.
             var keysToUpdate = new List<(string key, EventParamValues val)>();
             foreach (var (paramName, paramValue) in evtParams)
             {
                 if (IsKeyword(paramName)) continue;
-                if (paramValue is not EventParamValues)
-                    keysToUpdate.Add((paramName, new EventParamValues(paramValue)));
+                keysToUpdate.Add((paramName, paramValue is EventParamValues values
+                    ? new EventParamValues(values)
+                    : new EventParamValues(paramValue)));
             }
             foreach (var (key, val) in keysToUpdate)
+            {
                 evtParams[key] = val;
+                _hasPlaceholders |= val.Any(v => v is string s && s.Trim().StartsWith('$'));
+            }
 
             // Normalize #unique
             if (evtParams.TryGetValue("#unique", out var uniqueVal))
@@ -167,11 +196,42 @@ public sealed class NameParamSelector : EventSelector
                 else if (uniqueVal is not string[])
                     throw new ArgumentException($"#unique must be string or string[], got {uniqueVal.GetType().Name}");
             }
+
+            _template[evtName] = evtParams.ToDictionary(
+                kv => kv.Key,
+                kv => kv.Value is EventParamValues values ? new EventParamValues(values) : kv.Value);
         }
 
         // Resolve $param substitutions
         if (paramSubs is not null && paramSubs.Count > 0)
             ResolveParamSubs(paramSubs);
+    }
+
+    /// <summary>
+    /// A new selector built from this one's constraints as written, with <c>$name</c> placeholders
+    /// resolved against <paramref name="paramSubs"/> overlaid by the construction-time substitutions.
+    /// </summary>
+    internal override EventSelector WithParamSubs(Dictionary<string, object> paramSubs)
+    {
+        if (!_hasPlaceholders)
+            return this;
+
+        // The construction-time substitutions win. RetryUntilAsync passes the whole command
+        // response here, and when it overrode them, a response field that shared a name with one
+        // the caller had fixed silently replaced the caller's value.
+        var merged = new Dictionary<string, object>(_paramSubs?.Comparer ?? paramSubs.Comparer);
+        foreach (var (key, value) in paramSubs)
+            merged[key] = value;
+        if (_paramSubs is not null)
+        {
+            foreach (var (key, value) in _paramSubs)
+                merged[key] = value;
+        }
+
+        // The constructor copies each constraint map and its EventParamValues, so the template is
+        // never written through.
+        var template = _template.ToDictionary(kv => kv.Key, kv => (Dictionary<string, object>?)kv.Value);
+        return new NameParamSelector(template, merged);
     }
 
     private void ResolveParamSubs(Dictionary<string, object> paramSubs)
@@ -226,7 +286,7 @@ public sealed class NameParamSelector : EventSelector
                 break;
             }
 
-            if (!allowedValues.Any(v => Equals(v, actualValue)))
+            if (!allowedValues.Any(v => ValueEquals(v, actualValue)))
             {
                 allMatch = false;
                 break;
@@ -269,7 +329,7 @@ public sealed class NameParamSelector : EventSelector
             {
                 if (!message.Parameters.TryGetValue(paramName, out var newVal) ||
                     !existing.Parameters.TryGetValue(paramName, out var existingVal) ||
-                    !Equals(newVal, existingVal))
+                    !ValueEquals(newVal, existingVal))
                 {
                     allMatch = false;
                     break;
@@ -279,6 +339,21 @@ public sealed class NameParamSelector : EventSelector
         }
         return false;
     }
+
+    // Values compare by value, as in Python. Boxed Equals needed the same CLR type and compared
+    // arrays by reference, so an int literal never matched the ushort an event decodes to, and a
+    // bd_addr, uuid or uint8array (byte[]) never matched or deduplicated at all.
+    private static bool ValueEquals(object? expected, object? actual)
+    {
+        if (expected is byte[] expectedBytes && actual is byte[] actualBytes)
+            return expectedBytes.AsSpan().SequenceEqual(actualBytes);
+        if (IsInteger(expected) && IsInteger(actual))
+            return Convert.ToDecimal(expected) == Convert.ToDecimal(actual);
+        return Equals(expected, actual);
+    }
+
+    private static bool IsInteger(object? value) =>
+        value is byte or sbyte or short or ushort or int or uint or long or ulong;
 }
 
 /// <summary>
@@ -328,6 +403,9 @@ public sealed class CompositeSelector : EventSelector
     {
         _children = [.. children];
     }
+
+    internal override EventSelector WithParamSubs(Dictionary<string, object> paramSubs) =>
+        new CompositeSelector(_children.Select(c => c.WithParamSubs(paramSubs)));
 
     public override EventCategory Categorize(BgapiMessage message, IReadOnlyList<BgapiMessage> selectedEvents)
     {

@@ -189,6 +189,12 @@ public sealed class BgapiEventQueue
                 $"softFinalEventCount ({softFinalEventCount}) must be <= finalEventCount ({finalEventCount})");
         }
 
+        // paramSubs used to be accepted and never read, so a $name constraint kept its literal
+        // "$name" string and RetryUntilAsync's waits, which pass the command response here, could
+        // never match an event that carried the response's value.
+        if (paramSubs is { Count: > 0 })
+            selector = selector.WithParamSubs(paramSubs);
+
         var effectiveFinalCount = finalEventCount ?? int.MaxValue;
         var thresholdCount = softFinalEventCount ?? effectiveFinalCount;
         var selected = selectedEvents ?? new BgapiEventList();
@@ -401,7 +407,8 @@ public sealed class BgapiEventQueue
     /// - Rebuilds event selector after each successful command
     /// - Supports retry event selector for recoverable error detection
     /// - Accumulates events across retry iterations
-    /// - If eventSelector is null, returns command response only (no event waiting)
+    /// - If eventSelector is null, returns an empty BgapiEventList as soon as the command succeeds
+    ///   (no event waiting)
     /// </summary>
     public async Task<BgapiEventList> RetryUntilAsync(
         Func<Task<BgapiCommandResponse>> command,
@@ -421,6 +428,10 @@ public sealed class BgapiEventQueue
         bool anyCmdSuccess = false;
         bool lastCmdFailed = false;
         int prevSelEvtCount = 0;
+        // Kept across outer iterations: when a later attempt's command fails transiently, the
+        // wait in its place collects events from the last command that succeeded, so it resolves
+        // $name against that command's response. Declared per iteration, that wait had none.
+        Dictionary<string, object> paramSubs = [];
 
         _logger.LogDebug("RetryUntilAsync: retryMax={RetryMax} retryCmdMax={RetryCmdMax} finalEventCount={FinalEventCount}",
             retryParams.RetryMax, retryParams.RetryCmdMax, finalEventCount);
@@ -431,7 +442,6 @@ public sealed class BgapiEventQueue
 
             // Execute command with retries for transient errors
             BgapiCommandResponse? cmdResponse = null;
-            Dictionary<string, object> paramSubs = [];
 
             for (int cmdAttempt = 0; cmdAttempt <= retryParams.RetryCmdMax; cmdAttempt++)
             {
@@ -533,9 +543,12 @@ public sealed class BgapiEventQueue
                 {
                     if (retryCount < retryParams.RetryMax)
                     {
+                        // WaitEvents collected into selectedEvents in place, so the next attempt
+                        // carries on from it with its final count. It used to restart from a copy
+                        // whose count was 0, and a stateful selector, which keeps the events it
+                        // already counted, could then never reach finalEventCount.
                         _logger.LogDebug("Retry {RetryCount}/{RetryMax}: events not complete ({Collected} collected), retrying",
                             retryCount, retryParams.RetryMax, ex.CollectedEvents.Count);
-                        selectedEvents = new BgapiEventList(ex.CollectedEvents);
                         continue;
                     }
                     _logger.LogWarning("RetryUntilAsync exhausted all {RetryMax} retries", retryParams.RetryMax);
@@ -546,8 +559,11 @@ public sealed class BgapiEventQueue
                 var newEvents = selectedEvents.Skip(prevSelEvtCount).ToList();
                 if (retryEventSelector is not null && retryCount < retryParams.RetryMax)
                 {
+                    // Resolved like the event selector: matched as written, a "$name" constraint
+                    // on the failure event never matched, and a failure was returned as success.
+                    var retrySelector = paramSubs.Count > 0 ? retryEventSelector.WithParamSubs(paramSubs) : retryEventSelector;
                     bool hasRetryEvent = newEvents.Any(e =>
-                        retryEventSelector.Categorize(e, []) != EventCategory.Ignore);
+                        retrySelector.Categorize(e, []) != EventCategory.Ignore);
 
                     if (hasRetryEvent)
                     {

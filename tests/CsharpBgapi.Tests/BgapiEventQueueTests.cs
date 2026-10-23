@@ -400,4 +400,27 @@ public class BgapiEventQueueTests
         queue.Count.Should().Be(0);
         queue.GetEvent(TimeSpan.Zero).Should().BeNull();
     }
+
+    // WaitEvents took paramSubs and never read them, so a "$name" constraint kept its literal
+    // "$address" string and the wait could only time out — the path every RetryUntilAsync wait
+    // takes with the command response.
+
+    [Fact]
+    public void WaitEvents_ParamSubs_ResolveDollarPlaceholders()
+    {
+        var queue = new BgapiEventQueue();
+        var fromNode = new BgapiMessage(Event(VendorEvent).Header, ReadOnlyMemory<byte>.Empty)
+        {
+            EventName = VendorEvent,
+            Parameters = new Dictionary<string, object> { { "source_address", (ushort)256 } },
+        };
+        queue.Enqueue(fromNode);
+        var selector = new NameParamSelector(VendorEvent,
+            new Dictionary<string, object> { { "source_address", "$address" } });
+
+        var taken = queue.WaitEvents(selector, Short, maxTime: Short,
+            paramSubs: new Dictionary<string, object> { { "address", (ushort)256 } });
+
+        taken.Should().ContainSingle().Which.Should().BeSameAs(fromNode);
+    }
 }

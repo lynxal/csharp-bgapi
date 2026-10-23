@@ -11,7 +11,7 @@ namespace CsharpBgapi.Serial;
 /// Serial port connector for BGAPI communication.
 /// Handles raw I/O with framing, device ID validation, and thread-safe access.
 /// </summary>
-public sealed class BgapiConnector : IDisposable
+internal sealed class BgapiConnector : IDisposable
 {
     /// <summary>
     /// Holds bytes that have arrived but not yet formed a complete frame. Sized well past the
@@ -151,7 +151,22 @@ public sealed class BgapiConnector : IDisposable
                 try { _port.Handshake = Handshake.None; }
                 catch (Exception ex) { _logger.LogDebug(ex, "Failed to disable RTS/CTS handshake before closing"); }
             }
-            _port.Close();
+
+            try
+            {
+                _port.Close();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // SerialPort.Close flushes first, and on a port whose USB device was removed the
+                // flush throws and the port keeps reporting IsOpen. BgapiDevice.Open then refused
+                // every later Open, and only a process restart recovered. Release the handle
+                // through the stream, whose Dispose closes it even when it throws, and drop the port.
+                _logger.LogWarning(ex, "Closing the serial port failed; abandoning it");
+                try { _port.BaseStream.Dispose(); }
+                catch (Exception inner) { _logger.LogDebug(inner, "Disposing the abandoned port's stream failed"); }
+                _port = null;
+            }
         }
     }
 

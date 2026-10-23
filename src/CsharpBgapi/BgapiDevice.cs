@@ -37,6 +37,12 @@ public sealed class BgapiDevice : IDisposable
     public bool IsOpen => _connector.IsOpen;
 
     /// <summary>
+    /// Total bytes discarded while resyncing the serial stream since the port was opened. A non-zero
+    /// and growing value means the link is losing bytes.
+    /// </summary>
+    public long DroppedByteCount => _connector.DroppedByteCount;
+
+    /// <summary>
     /// Default timeout for waiting for command responses.
     /// </summary>
     public TimeSpan ResponseTimeout { get; set; }
@@ -57,8 +63,12 @@ public sealed class BgapiDevice : IDisposable
         _stopReaderTimeout = TimeSpan.FromSeconds(_config.StopReaderTimeoutSeconds);
     }
 
-    public BgapiDevice(IOptions<CsharpBgapiOptions> options, ILoggerFactory loggerFactory)
+    // loggerFactory defaults to null so DI can choose this constructor when the host registers no
+    // logging. It used to fall back to BgapiDevice(ILogger?), which builds default options, and the
+    // AddCsharpBgapi configure delegate was silently ignored.
+    public BgapiDevice(IOptions<CsharpBgapiOptions> options, ILoggerFactory? loggerFactory = null)
     {
+        loggerFactory ??= NullLoggerFactory.Instance;
         _config = options.Value;
         _logger = loggerFactory.CreateLogger<BgapiDevice>();
         _definitions = new XapiDefinitions();
@@ -99,8 +109,31 @@ public sealed class BgapiDevice : IDisposable
         _connector.SetKnownDeviceIds(_definitions.GetKnownDeviceIds());
     }
 
+    /// <summary>
+    /// Every serial port name the machine reports. No vendor filtering is applied — picking the
+    /// NCP is the caller's job.
+    /// </summary>
+    public static string[] FindPorts() => BgapiConnector.FindPorts();
+
+    /// <summary>
+    /// Opens the serial port and starts the background reader.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The device is already open.</exception>
     public void Open(string portName, int baudRate = 0, Handshake handshake = Handshake.None)
     {
+        // A second Open used to go through: the connector replaced its port without closing the
+        // old one, and StartReader started a second reader thread over the same connector, so two
+        // readers raced for frames and the first one's thread and token source were never
+        // stopped. Checked on the port rather than on the reader, so a device whose port went
+        // away underneath it (the reader then exits on its own) can still be opened again.
+        if (IsOpen)
+            throw new InvalidOperationException("BgapiDevice is already open. Call Close() before opening it again.");
+
+        // The reader of a port that went away without Close() may still be inside ReadMessage.
+        // StartReader used to overwrite its thread and token source without stopping it, so it
+        // carried on beside the new reader.
+        StopReader();
+
         _logger.LogInformation("BgapiDevice opening on {PortName}", portName);
         _connector.Open(portName, baudRate, handshake);
         StartReader();
@@ -166,19 +199,9 @@ public sealed class BgapiDevice : IDisposable
                     return new BgapiCommandResponse { Status = SlStatus.Timeout };
                 }
 
-                // Extract status by scanning for errorcode-typed parameter
-                var status = SlStatus.OK;
-                var errorCodeParam = BgapiProtocol.FindErrorCodeParamName(cmdDef);
-                if (errorCodeParam is not null &&
-                    response.Parameters is not null &&
-                    response.TryGetParameter<ushort>(errorCodeParam, out var result))
-                {
-                    status = SlStatusExtensions.FromUint(result);
-                }
-
                 return new BgapiCommandResponse
                 {
-                    Status = status,
+                    Status = ResponseStatus(cmdDef, response),
                     Parameters = response.Parameters,
                     RawMessage = response
                 };
@@ -206,6 +229,24 @@ public sealed class BgapiDevice : IDisposable
     {
         return SendCommandAsync(apiName, className, commandName, parameters, timeout, CancellationToken.None)
             .GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// The status a command's response reports: its errorcode-typed return parameter mapped to
+    /// <see cref="SlStatus"/>, <see cref="SlStatus.OK"/> when the command declares no errorcode
+    /// return, or <see cref="SlStatus.Fail"/> when the decoded payload ended before it.
+    /// </summary>
+    internal static SlStatus ResponseStatus(CommandDefinition command, BgapiMessage response)
+    {
+        var errorCodeParam = BgapiProtocol.FindErrorCodeParamName(command);
+        if (errorCodeParam is null)
+            return SlStatus.OK;
+
+        // A payload that ends before the errorcode (a truncated frame, or one resynced out of
+        // junk) used to report OK, and the caller carried on as if the NCP had accepted the command.
+        return response.Parameters is not null && response.TryGetParameter<ushort>(errorCodeParam, out var result)
+            ? SlStatusExtensions.FromUint(result)
+            : SlStatus.Fail;
     }
 
     public BgapiEventList WaitEvent(
@@ -365,8 +406,13 @@ public sealed class BgapiDevice : IDisposable
 
     private void StartReader()
     {
+        // Each reader gets its own token rather than re-reading _readerCts: a reader that outlived
+        // StopReader's join would otherwise pick up the next reader's uncancelled token. The token
+        // is read here, not on the new thread: StopReader may dispose the source before that thread
+        // runs, and CancellationTokenSource.Token then throws, unhandled, and ends the process.
         _readerCts = new CancellationTokenSource();
-        _readerThread = new Thread(ReaderLoop)
+        var token = _readerCts.Token;
+        _readerThread = new Thread(() => ReaderLoop(token))
         {
             IsBackground = true,
             Name = "BgapiReader"
@@ -383,12 +429,12 @@ public sealed class BgapiDevice : IDisposable
         _readerThread = null;
     }
 
-    private void ReaderLoop()
+    private void ReaderLoop(CancellationToken ct)
     {
         _logger.LogDebug("ReaderLoop started");
         try
         {
-            while (_readerCts is { IsCancellationRequested: false } && _connector.IsOpen)
+            while (!ct.IsCancellationRequested && _connector.IsOpen)
             {
                 try
                 {
@@ -479,7 +525,7 @@ public sealed class BgapiDevice : IDisposable
         byte ClassIndex,
         byte CommandIndex);
 
-    private void DispatchToHandlers(BgapiMessage message)
+    internal void DispatchToHandlers(BgapiMessage message)
     {
         if (message.EventName is null)
         {

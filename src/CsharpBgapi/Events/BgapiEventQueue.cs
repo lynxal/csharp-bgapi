@@ -183,6 +183,27 @@ public sealed class BgapiEventQueue
         bool keepAllEvents = false,
         Dictionary<string, object>? paramSubs = null,
         BgapiEventList? selectedEvents = null,
+        CancellationToken ct = default) =>
+        WaitEvents(null, selector, timeout, maxEvents, maxTime, resetTimeoutOnEvent, finalEventCount,
+            softFinalEventCount, softFinalEventProcTime, keepAllEvents, paramSubs, selectedEvents, ct);
+
+    /// <summary>
+    /// The public WaitEvents, also adding each event it counts toward the final count to
+    /// <paramref name="counted"/>, so RetryUntilAsync can take back the count of one it drops.
+    /// </summary>
+    private BgapiEventList WaitEvents(
+        HashSet<BgapiMessage>? counted,
+        EventSelector selector,
+        TimeSpan timeout,
+        int maxEvents = int.MaxValue,
+        TimeSpan? maxTime = null,
+        bool resetTimeoutOnEvent = false,
+        int? finalEventCount = 1,
+        int? softFinalEventCount = null,
+        TimeSpan? softFinalEventProcTime = null,
+        bool keepAllEvents = false,
+        Dictionary<string, object>? paramSubs = null,
+        BgapiEventList? selectedEvents = null,
         CancellationToken ct = default)
     {
         if (softFinalEventCount.HasValue && finalEventCount.HasValue &&
@@ -234,7 +255,8 @@ public sealed class BgapiEventQueue
             selected.Add(message!);
             if (category == EventCategory.SelectFinal)
             {
-                selected.CountFinal(message!);
+                selected.FinalEventCount++;
+                counted?.Add(message!);
                 if (selected.FinalEventCount >= thresholdCount)
                 {
                     thresholdReached = true;
@@ -275,7 +297,8 @@ public sealed class BgapiEventQueue
                     selected.Add(message!);
                     if (category == EventCategory.SelectFinal)
                     {
-                        selected.CountFinal(message!);
+                        selected.FinalEventCount++;
+                        counted?.Add(message!);
                         if (selected.FinalEventCount >= effectiveFinalCount)
                             break;
                     }
@@ -431,6 +454,10 @@ public sealed class BgapiEventQueue
     {
         var retryErrorCodes = retryCmdErrorCodes ?? [SlStatus.Busy, SlStatus.NoMoreResource];
         var selectedEvents = new BgapiEventList();
+        // The events selectedEvents counted toward finalEventCount, so one dropped before a retry
+        // gives back its count. Kept here rather than on the list the caller is handed: a caller
+        // reusing that list and clearing it kept every event the list had counted alive.
+        var counted = new HashSet<BgapiMessage>();
         bool anyCmdSuccess = false;
         bool lastCmdFailed = false;
         int prevSelEvtCount = 0;
@@ -469,6 +496,7 @@ public sealed class BgapiEventQueue
                             try
                             {
                                 selectedEvents = WaitEvents(
+                                    counted,
                                     eventSelector!,
                                     retryParams.RetryCmdInterval,
                                     resetTimeoutOnEvent: retryIntRstOnEvt,
@@ -508,7 +536,10 @@ public sealed class BgapiEventQueue
 
                     // Reset selected events for stateless selectors after successful command
                     if (eventSelector.Stateless)
+                    {
                         selectedEvents = new BgapiEventList();
+                        counted.Clear();
+                    }
 
                     anyCmdSuccess = true;
                     lastCmdFailed = false;
@@ -540,6 +571,7 @@ public sealed class BgapiEventQueue
                 try
                 {
                     selectedEvents = WaitEvents(
+                        counted,
                         eventSelector!,
                         retryParams.RetryInterval,
                         resetTimeoutOnEvent: retryIntRstOnEvt,
@@ -567,7 +599,7 @@ public sealed class BgapiEventQueue
                         _logger.LogDebug("Retry {RetryCount}/{RetryMax}: events not complete ({Collected} collected), retrying",
                             retryCount, retryParams.RetryMax, ex.CollectedEvents.Count);
                         if (retrySelector is not null)
-                            selectedEvents.Drop(e => retrySelector.Categorize(e, []) != EventCategory.Ignore);
+                            Drop(selectedEvents, counted, e => retrySelector.Categorize(e, []) != EventCategory.Ignore);
                         continue;
                     }
                     _logger.LogWarning("RetryUntilAsync exhausted all {RetryMax} retries", retryParams.RetryMax);
@@ -587,9 +619,12 @@ public sealed class BgapiEventQueue
                         // and what they had counted could end the next wait at once. Dropped as
                         // after a wait that falls short.
                         if (eventSelector!.Stateless)
+                        {
                             selectedEvents = new BgapiEventList();
+                            counted.Clear();
+                        }
                         else
-                            selectedEvents.Drop(e => retrySelector.Categorize(e, []) != EventCategory.Ignore);
+                            Drop(selectedEvents, counted, e => retrySelector.Categorize(e, []) != EventCategory.Ignore);
                         continue;
                     }
                 }
@@ -608,6 +643,17 @@ public sealed class BgapiEventQueue
 
     ReturnEvents:
         return selectedEvents;
+    }
+
+    /// <summary>Removes the events <paramref name="match"/> selects, taking back the count of each one counted.</summary>
+    private static void Drop(BgapiEventList events, HashSet<BgapiMessage> counted, Predicate<BgapiMessage> match)
+    {
+        foreach (var message in events.FindAll(match))
+        {
+            events.Remove(message);
+            if (counted.Remove(message))
+                events.FinalEventCount--;
+        }
     }
 
     /// <summary>Drops every retained event and starts a new drop-warning episode.</summary>

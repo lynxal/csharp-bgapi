@@ -150,6 +150,57 @@ public class BgapiDeviceValidationTests
         session.Written.Should().Equal("halt", "hello", "halt");
     }
 
+    // Cancellation was read only by the waits, after each write. Cancelled once the fence had been
+    // answered but before its wait resumed, the repeat was still written, then reported cancelled.
+    [Fact]
+    public async Task SendCommandAsync_CancelledAfterTheFenceIsAnswered_DoesNotWriteTheRepeat()
+    {
+        using var session = new Session();
+        session.Device.ScheduleResponseTimeout = (source, _) => source.Cancel();
+        (await session.Send().WaitAsync(Guard)).Status.Should().Be(SlStatus.Timeout);
+
+        var routed = Signal<bool>();
+        // Dispatched on the reader once it has routed the answer injected before the event.
+        session.Device.Subscribe("bt_evt_user_message_to_host", _ => routed.TrySetResult(true));
+        session.Port.OnWrite = written =>
+            session.Port.Inject([.. session.ReplyTo(written), .. Wire.Event(session.Device.Definitions, 1)]);
+        using var cancellation = new CancellationTokenSource();
+        session.Device.ScheduleResponseTimeout = (_, _) =>
+        {
+            routed.Task.Wait(Guard).Should().BeTrue();
+            cancellation.Cancel();
+        };
+        await ((Func<Task>)(() => session.Send(cancellation.Token).WaitAsync(Guard))).Should().ThrowAsync<OperationCanceledException>();
+        session.Written.Should().Equal("halt", "hello");
+
+        // The fence's answer was taken, so the next halt needs no fence.
+        session.Device.ScheduleResponseTimeout = (source, timeout) => source.CancelAfter(timeout);
+        (await session.Send().WaitAsync(Guard)).Status.Should().Be(SlStatus.OK);
+        session.Written.Should().Equal("halt", "hello", "halt");
+    }
+
+    // Granted the lock as its caller cancelled, a no_return command was still written: nothing read
+    // the token once the wait for the lock had ended.
+    [Fact]
+    public async Task SendCommandAsync_NoReturnCancelledAsTheLockIsGranted_IsNotWritten()
+    {
+        using var session = new Session();
+        var active = session.Send();
+        using var cancellation = new CancellationTokenSource();
+        var context = new QueuedContext();
+        var waiting = context.Run(() => session.Device.SendCommandAsync("bt", "system", "reset", ct: cancellation.Token));
+        session.Port.Inject(session.Reply());
+        (await active.WaitAsync(Guard)).Status.Should().Be(SlStatus.OK);
+        // The lock was released to the waiter, whose continuation is queued and has not run.
+        cancellation.Cancel();
+        context.RunUntil(waiting);
+        await ((Func<Task>)(() => waiting.WaitAsync(Guard))).Should().ThrowAsync<OperationCanceledException>();
+        session.Written.Should().Equal("halt");
+
+        (await session.Device.SendCommandAsync("bt", "system", "reset").WaitAsync(Guard)).Status.Should().Be(SlStatus.OK);
+        session.Written.Should().Equal("halt", "reset");
+    }
+
     [Fact]
     public async Task SendCommandAsync_SendFailureAndNoReturn_LeaveLockUsable()
     {

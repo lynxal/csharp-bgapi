@@ -217,6 +217,9 @@ public sealed class BgapiDevice : IDisposable
 
             if (cmdDef.NoReturn)
             {
+                // The wait for the lock can end as ct is cancelled, and nothing else reads it before
+                // this write. ExchangeAsync reads it before its own.
+                ct.ThrowIfCancellationRequested();
                 _connector.SendCommand(data);
                 return new BgapiCommandResponse { Status = SlStatus.OK };
             }
@@ -267,10 +270,14 @@ public sealed class BgapiDevice : IDisposable
 
     /// <summary>
     /// Writes one command and waits for its response: null when it times out, OperationCanceledException
-    /// when <paramref name="ct"/> is cancelled. Caller holds <see cref="_commandLock"/>.
+    /// when <paramref name="ct"/> is cancelled, without writing it when it already was. Caller holds
+    /// <see cref="_commandLock"/>.
     /// </summary>
     private async Task<BgapiMessage?> ExchangeAsync(byte[] data, BgapiHeader header, TimeSpan timeout, CancellationToken ct)
     {
+        // The token used to be read only by the wait, after the write. Cancelled once a fence had
+        // been answered but before its wait resumed, the repeat was still written.
+        ct.ThrowIfCancellationRequested();
         long send = _sends++;
         // Set up response TCS before sending to avoid race
         var tcs = InstallPendingCommand(header);

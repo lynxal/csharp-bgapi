@@ -48,6 +48,9 @@ coverage/
 .memory/
 operational_memory/
 
+## Claude Code (per-machine settings)
+/.claude/settings.local.json
+
 ## Agent OS
 agent-os/
 /promotion/01-github-metadata.md

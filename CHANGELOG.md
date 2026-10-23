@@ -38,6 +38,7 @@ First stable release. From here the public API follows Semantic Versioning: brea
 - A reader held up after a read (by a subscriber callback) for longer than `StopReaderTimeoutSeconds` dispatched the closed port's message after `Close` returned, into the queue and to subscribers of a reopened session. A message read after `Close` is now dropped.
 - `Dispose` with a command in flight made that command throw `ObjectDisposedException` from its lock instead of its cancellation or timeout, and a caller waiting for the lock was never released. The command in flight now completes as after `Close`; waiting and later callers get `ObjectDisposedException`.
 - After a final `Close` or `Dispose`, the late fault of the serial read still in flight surfaced as `TaskScheduler.UnobservedTaskException`. Only a reopen used to observe it.
+- The package stored its XAPI files as `xapi//sl_bt.xapi` and `xapi//sl_btmesh.xapi`, with an empty path segment, when packed on Linux, as every published package was. They are now `xapi/sl_bt.xapi` and `xapi/sl_btmesh.xapi`.
 
 ## [0.3.0] - 2026-10-22
 

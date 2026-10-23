@@ -50,10 +50,11 @@
     <EmbeddedResource Include="Xapi\*.xapi" />
   </ItemGroup>
 
-  <!-- Copy XAPI files to output for ProjectReference consumers -->
+  <!-- Copy XAPI files to output for ProjectReference consumers. PackagePath ends in a forward
+       slash: packed on Linux, "xapi\" gave the entries an empty segment (xapi//sl_bt.xapi). -->
   <ItemGroup>
-    <Content Include="Xapi\sl_bt.xapi" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="xapi\" />
-    <Content Include="Xapi\sl_btmesh.xapi" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="xapi\" />
+    <Content Include="Xapi\sl_bt.xapi" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="xapi/" />
+    <Content Include="Xapi\sl_btmesh.xapi" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="xapi/" />
   </ItemGroup>
 
   <!-- Pack .targets into the NuGet package for PackageReference consumers -->

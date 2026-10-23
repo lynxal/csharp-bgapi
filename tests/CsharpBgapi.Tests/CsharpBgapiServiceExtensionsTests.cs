@@ -64,4 +64,21 @@ public class CsharpBgapiServiceExtensionsTests
 
         provider.GetRequiredService<BgapiDevice>().ResponseTimeout.Should().Be(TimeSpan.FromSeconds(7.5));
     }
+
+    // With a plain ILogger registered and no ILoggerFactory, DI could satisfy both BgapiDevice(ILogger?)
+    // and the options constructor, whose factory is optional, and neither takes the other's
+    // parameters: resolving the device threw an ambiguous-constructor InvalidOperationException.
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AddCsharpBgapi_WithAPlainLoggerRegistered_UsesTheOptionsConstructor(bool loadDefaultXapis)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<ILogger>(NullLogger.Instance);
+        services.AddCsharpBgapi(o => o.ResponseTimeoutSeconds = 7.5, loadDefaultXapis);
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetRequiredService<BgapiDevice>().ResponseTimeout.Should().Be(TimeSpan.FromSeconds(7.5));
+    }
 }

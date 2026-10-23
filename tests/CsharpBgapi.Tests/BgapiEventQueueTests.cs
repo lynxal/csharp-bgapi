@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using CsharpBgapi.Events;
 using CsharpBgapi.Protocol;
 using FluentAssertions;
@@ -274,6 +275,36 @@ public class BgapiEventQueueTests
 
         one.Should().ContainSingle().Which.Should().BeSameAs(third);
         sw.Elapsed.Should().BeLessThan(Prompt, "the soft window ends the wait, not the hard count");
+    }
+
+    // The list used to keep a set of the events it had counted, for RetryUntilAsync to take back
+    // the count of one it dropped. A caller reusing one list across waits, clearing it between
+    // them, kept every earlier event alive through that set.
+    [Fact]
+    public void WaitEvents_ReusedListCleared_KeepsNoClearedEventAlive()
+    {
+        var queue = new BgapiEventQueue();
+        var reused = new BgapiEventList();
+        var cleared = WaitInto(queue, reused);
+        reused.Clear();
+        reused.FinalEventCount = 0;
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        cleared.IsAlive.Should().BeFalse();
+        GC.KeepAlive(reused);
+    }
+
+    // Not inlined, so no local of the test's own frame keeps the event alive.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference WaitInto(BgapiEventQueue queue, BgapiEventList list)
+    {
+        var blockStatus = Event(BlockStatusEvent);
+        queue.Enqueue(blockStatus);
+        queue.WaitEvents(Select(BlockStatusEvent), Short, maxTime: Short, selectedEvents: list);
+        return new WeakReference(blockStatus);
     }
 
     [Fact]

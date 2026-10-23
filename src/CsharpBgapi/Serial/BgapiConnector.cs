@@ -23,7 +23,8 @@ internal sealed class BgapiConnector : IDisposable
     private const int ReadChunkSize = 4096;
 
     private readonly CsharpBgapiOptions _config;
-    private SerialPort? _port;
+    private ISerialConnection? _port;
+    private readonly Func<string, int, ISerialConnection> _createConnection;
     private readonly Lock _sendLock = new();
     private readonly Lock _receiveLock = new();
     private readonly ILogger _logger;
@@ -70,10 +71,12 @@ internal sealed class BgapiConnector : IDisposable
     public BgapiConnector(IOptions<CsharpBgapiOptions> options, ILogger<BgapiConnector> logger)
         : this(options, (ILogger)logger) { }
 
-    internal BgapiConnector(IOptions<CsharpBgapiOptions> options, ILogger logger)
+    internal BgapiConnector(IOptions<CsharpBgapiOptions> options, ILogger logger,
+        Func<string, int, ISerialConnection>? createConnection = null)
     {
         _config = options.Value;
         _logger = logger;
+        _createConnection = createConnection ?? ((name, baud) => new SerialConnection(name, baud));
         StalledCandidateBudget = TimeSpan.FromMilliseconds(Math.Max(1, _config.PartialFrameTimeoutMs));
     }
 
@@ -90,19 +93,22 @@ internal sealed class BgapiConnector : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        // A second Open used to publish its port over the open one, which then stayed open with
+        // nothing referencing it.
+        if (IsOpen)
+            throw new InvalidOperationException("Serial port is already open. Call Close() before opening it again.");
+
         var effectiveBaudRate = baudRate > 0 ? baudRate : _config.DefaultBaudRate;
 
         _logger.LogInformation(
             "Opening serial port {PortName} at {BaudRate} baud, handshake={Handshake}, partial-frame budget {BudgetMs}ms",
             portName, effectiveBaudRate, handshake, StalledCandidateBudget.TotalMilliseconds);
 
-        var port = new SerialPort(portName, effectiveBaudRate, Parity.None, 8, StopBits.One)
-        {
-            ReadTimeout = _config.SerialReadTimeoutMs,
-            WriteTimeout = _config.SerialWriteTimeoutMs,
-            Handshake = handshake,
-            DtrEnable = true,
-        };
+        var port = _createConnection(portName, effectiveBaudRate);
+        port.ReadTimeout = _config.SerialReadTimeoutMs;
+        port.WriteTimeout = _config.SerialWriteTimeoutMs;
+        port.Handshake = handshake;
+        port.DtrEnable = true;
 
         // Match PySerial: assert RTS even without hardware flow control.
         // With Handshake.RequestToSend, the driver manages RTS automatically.
@@ -167,6 +173,13 @@ internal sealed class BgapiConnector : IDisposable
                 catch (Exception inner) { _logger.LogDebug(inner, "Disposing the abandoned port's stream failed"); }
                 _port = null;
             }
+        }
+
+        // Only a reopen used to abandon the read, so after a final close its late fault went
+        // unobserved. Taken after the port is closed, which is what ends a read holding the lock.
+        lock (_receiveLock)
+        {
+            _pendingRead?.Abandon();
         }
     }
 

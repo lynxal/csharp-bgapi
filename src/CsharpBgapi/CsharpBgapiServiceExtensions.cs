@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CsharpBgapi;
 
@@ -23,19 +25,18 @@ public static class CsharpBgapiServiceExtensions
         var builder = services.AddOptions<CsharpBgapiOptions>();
         if (configure is not null) builder.Configure(configure);
 
-        if (loadDefaultXapis)
+        // The options constructor is called explicitly. Left to DI, a host with a plain ILogger and
+        // no ILoggerFactory registered could satisfy both it and BgapiDevice(ILogger?), neither of
+        // which takes the other's parameters, and resolving the device threw as ambiguous.
+        services.AddSingleton(sp =>
         {
-            services.AddSingleton<BgapiDevice>(sp =>
-            {
-                var device = ActivatorUtilities.CreateInstance<BgapiDevice>(sp);
+            var device = new BgapiDevice(
+                sp.GetRequiredService<IOptions<CsharpBgapiOptions>>(),
+                sp.GetService<ILoggerFactory>());
+            if (loadDefaultXapis)
                 device.LoadDefaultXapis();
-                return device;
-            });
-        }
-        else
-        {
-            services.AddSingleton<BgapiDevice>();
-        }
+            return device;
+        });
 
         return services;
     }

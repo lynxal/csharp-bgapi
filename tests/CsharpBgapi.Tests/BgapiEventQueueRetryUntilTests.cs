@@ -30,6 +30,17 @@ public class BgapiEventQueueRetryUntilTests
         };
     }
 
+    // A node's answer: result 0 is success, anything else failure.
+    private static BgapiMessage Answer(ushort sourceAddress, ushort result)
+    {
+        var message = Event(VendorReceive, sourceAddress);
+        message.Parameters!["result"] = result;
+        return message;
+    }
+
+    private static NameParamSelector Answers(ushort result, bool isFinal = true) =>
+        new(VendorReceive, new Dictionary<string, object> { { "result", result } }, isFinal);
+
     private static BgapiCommandResponse Response(SlStatus status, Dictionary<string, object>? parameters = null) =>
         new() { Status = status, Parameters = parameters };
 
@@ -209,6 +220,87 @@ public class BgapiEventQueueRetryUntilTests
             retryEventSelector: new NameParamSelector(failed, fromAddress));
 
         events.Should().ContainSingle().Which.Should().BeSameAs(success);
+        command.Calls.Should().Be(2);
+    }
+
+    // A failure the retry event selector matches was kept for the next attempt. A wait that fell
+    // short was never checked for one, and a stateful selector's retry kept it too. It still counted
+    // toward the final count, and under #unique it shadowed its node's later success, so a failed
+    // node could complete the result in place of that success.
+
+    [Fact]
+    public async Task RetryUntilAsync_WaitFallsShortWithAFailure_DropsItBeforeTheNextAttempt()
+    {
+        var queue = new BgapiEventQueue();
+        var firstFails = Answer(256, result: 1);
+        var secondSucceeds = Answer(512, result: 0);
+        var firstSucceeds = Answer(256, result: 0);
+        queue.Enqueue(firstFails);
+        var command = new ScriptedCommand(Response(SlStatus.OK))
+        {
+            BeforeAnswering = call =>
+            {
+                if (call == 1) queue.Enqueue(secondSucceeds);
+                if (call == 2) queue.Enqueue(firstSucceeds);
+            },
+        };
+        var selector = new NameParamSelector(VendorReceive,
+            new Dictionary<string, object> { { "#unique", "source_address" } });
+
+        var events = await queue.RetryUntilAsync(command.Invoke, selector, Fast,
+            retryEventSelector: Answers(result: 1), finalEventCount: 2);
+
+        events.Should().Equal(secondSucceeds, firstSucceeds);
+        command.Calls.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task RetryUntilAsync_StatefulRetryOnAFailure_DropsItBeforeTheNextAttempt()
+    {
+        var queue = new BgapiEventQueue();
+        var firstFails = Answer(256, result: 1);
+        var secondSucceeds = Answer(512, result: 0);
+        var firstSucceeds = Answer(256, result: 0);
+        queue.Enqueue(firstFails);
+        queue.Enqueue(secondSucceeds);
+        var command = new ScriptedCommand(Response(SlStatus.OK))
+        {
+            BeforeAnswering = call => { if (call == 1) queue.Enqueue(firstSucceeds); },
+        };
+        var selector = new NameParamSelector(VendorReceive,
+            new Dictionary<string, object> { { "#unique", "source_address" } });
+
+        var events = await queue.RetryUntilAsync(command.Invoke, selector, Fast,
+            retryEventSelector: Answers(result: 1), finalEventCount: 2);
+
+        events.Should().Equal(secondSucceeds, firstSucceeds);
+        command.Calls.Should().Be(2);
+    }
+
+    // A dropped failure gives back only the count it took: one selected as continue took none.
+
+    [Fact]
+    public async Task RetryUntilAsync_DroppedFailureSelectedAsContinue_KeepsTheFinalCount()
+    {
+        var queue = new BgapiEventQueue();
+        var secondSucceeds = Answer(512, result: 0);
+        var firstFails = Answer(256, result: 1);
+        var firstSucceeds = Answer(256, result: 0);
+        queue.Enqueue(secondSucceeds);
+        queue.Enqueue(firstFails);
+        var command = new ScriptedCommand(Response(SlStatus.OK))
+        {
+            BeforeAnswering = call => { if (call == 1) queue.Enqueue(firstSucceeds); },
+        };
+        var selector = new CompositeSelector(
+            new NameParamSelector(VendorReceive,
+                new Dictionary<string, object> { { "result", (ushort)0 }, { "#unique", "source_address" } }),
+            Answers(result: 1, isFinal: false));
+
+        var events = await queue.RetryUntilAsync(command.Invoke, selector, Fast,
+            retryEventSelector: Answers(result: 1), finalEventCount: 2);
+
+        events.Should().Equal(secondSucceeds, firstSucceeds);
         command.Calls.Should().Be(2);
     }
 }

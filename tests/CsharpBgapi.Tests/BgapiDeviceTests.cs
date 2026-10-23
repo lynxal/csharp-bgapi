@@ -1,3 +1,4 @@
+using CsharpBgapi.Events;
 using CsharpBgapi.Protocol;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -123,6 +124,32 @@ public class BgapiDeviceTests
         var act = () => device.GetEventId("btmesh", "vendor_model", "vendor_model_receive");
 
         act.Should().Throw<KeyNotFoundException>();
+    }
+
+    [Fact]
+    public async Task WaitEventAsyncAndWaitEventsAsync_TakeEventsFromTheDevicesQueue()
+    {
+        using var device = new BgapiDevice();
+        var first = CreateEvent("btmesh_evt_vendor_model_receive");
+        var second = CreateEvent("btmesh_evt_vendor_model_receive");
+        device.EventQueue.Enqueue(first);
+        device.EventQueue.Enqueue(second);
+        var selector = new NameParamSelector("btmesh_evt_vendor_model_receive");
+
+        var one = await device.WaitEventAsync(selector, TimeSpan.FromSeconds(5));
+        var other = await device.WaitEventsAsync(selector, TimeSpan.FromSeconds(5));
+
+        one.Should().ContainSingle().Which.Should().BeSameAs(first);
+        other.Should().ContainSingle().Which.Should().BeSameAs(second);
+        device.EventQueue.Count.Should().Be(0);
+    }
+
+    // Event flag 0xA0 with device id 5 (btmesh) in bits 3-6, class 0, index 0, no payload. The
+    // queue matches on EventName alone, so the indices are never read.
+    private static BgapiMessage CreateEvent(string name)
+    {
+        var header = new BgapiHeader((byte)(BgapiHeader.EventFlag | (5 << 3)), payloadLength: 0, classIndex: 0, commandIndex: 0);
+        return new BgapiMessage(header, ReadOnlyMemory<byte>.Empty) { EventName = name };
     }
 
     private sealed class RecordingLogger : ILogger

@@ -30,7 +30,7 @@ BgapiDevice (main entry point)
 - **BgapiDevice** orchestrates the connector, protocol, and event queue. It runs a background reader thread that dispatches responses and events.
 - **BgapiConnector** (internal) handles raw serial communication with thread-safe send/receive locks.
 - **BgapiProtocol** encodes commands and decodes messages using XAPI XML definitions.
-- **BgapiEventQueue** provides `WaitEvents` (selector-based event matching) and `RetryUntilAsync` (command retry with event confirmation). A wait takes only the events its selector selects; everything else stays queued, in arrival order, for other waiters. Unclaimed events are retained up to `MaxQueuedEvents`, after which the oldest is dropped and counted on `DroppedEventCount`.
+- **BgapiEventQueue** provides `WaitEvents` (selector-based event matching), its non-blocking twin `WaitEventsAsync`, and `RetryUntilAsync` (command retry with event confirmation). A wait takes only the events its selector selects; everything else stays queued, in arrival order, for other waiters. Unclaimed events are retained up to `MaxQueuedEvents`, after which the oldest is dropped and counted on `DroppedEventCount`.
 
 ## Prerequisites
 
@@ -168,6 +168,9 @@ services.AddCsharpBgapi(options =>
 ```csharp
 var selector = new NameParamSelector("btmesh_evt_vendor_model_receive");
 var events = device.WaitEvents(selector, TimeSpan.FromSeconds(5), finalEventCount: 3);
+
+// Same wait without blocking a thread
+var awaited = await device.WaitEventsAsync(selector, TimeSpan.FromSeconds(5), finalEventCount: 3);
 ```
 
 ### Retry Pattern

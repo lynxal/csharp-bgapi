@@ -392,6 +392,12 @@ public sealed class BgapiDevice : IDisposable
     /// <summary>
     /// Synchronous convenience wrapper for SendCommandAsync.
     /// </summary>
+    /// <remarks>
+    /// Calling it from a <see cref="Subscribe"/> handler is unsupported. The handler holds the reader
+    /// thread, so a command that expects a response gets <see cref="SlStatus.Timeout"/>. Even a
+    /// <c>no_return</c> command first waits out any command already in flight. See
+    /// <see cref="Subscribe"/>.
+    /// </remarks>
     public BgapiCommandResponse SendCommand(
         string apiName,
         string className,
@@ -476,8 +482,53 @@ public sealed class BgapiDevice : IDisposable
     #region Event Subscription
 
     /// <summary>
-    /// Subscribe to events by name. Handler is called on the reader thread.
+    /// Subscribe to events by name. The handler runs on the reader thread, so it must return quickly
+    /// and must not block.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Handlers run inline on the device's only reader thread, in arrival order, after the event has
+    /// been queued for <c>WaitEvents</c>. Until a handler returns, nothing is read off the port: no
+    /// command gets its response, and no later event is queued or dispatched. Bytes keep arriving
+    /// meanwhile, and with the default <c>Handshake.None</c> a long hold can overflow the operating
+    /// system's receive buffer, so frames are lost, not just delayed. A handler that throws is logged
+    /// at Warning, and the other handlers still run.
+    /// </para>
+    /// <para>
+    /// A handler therefore must not wait for anything the reader delivers. A synchronous
+    /// <see cref="SendCommand"/> from a handler first waits for the command lock. A command that
+    /// another thread has in flight cannot get its response either, so the handler waits out that
+    /// command's timeout first, and indefinitely if that timeout is <c>Timeout.InfiniteTimeSpan</c>.
+    /// The handler's own command then cannot get its response until the handler returns, so it
+    /// returns <see cref="SlStatus.Timeout"/> after the response timeout. Usually the command has been
+    /// written by then, and the NCP may have acted on it. When an earlier command with the same
+    /// header is still unanswered, the fence sent ahead of it times out instead, and the command is
+    /// not written at all. A command the XAPI marks <c>no_return</c> (such as
+    /// <c>bt.system.reboot</c>) waits for no response: once it has the lock it is written and
+    /// returns <see cref="SlStatus.OK"/>. <c>AddEventFilter</c>, <c>RemoveEventFilter</c> and
+    /// <c>ResetEventFilter</c> go through <see cref="SendCommand"/> and time out the same way.
+    /// </para>
+    /// <para>
+    /// Blocking on a <see cref="SendCommandAsync"/> or <c>RetryUntilAsync</c> task holds the reader
+    /// the same way. Do not start <c>RetryUntilAsync</c> from a handler even without blocking on it:
+    /// when its command completes at once, as a <c>no_return</c> command does, its event wait runs on
+    /// the reader thread. <c>WaitEvent</c>, <c>WaitEvents</c> and <c>GetEvent</c> see only events
+    /// already queued, and otherwise wait out their timeout. The event being dispatched is already in
+    /// the queue, so a selector that matches it takes it away from every other waiter.
+    /// <see cref="Close"/> and <see cref="Dispose"/> cannot stop the reader from its own thread: they
+    /// wait out <c>StopReaderTimeoutSeconds</c>, log a Warning and close the port anyway, and the
+    /// reader exits once the handler returns. After such a <see cref="Close"/>, <see cref="Open"/>
+    /// throws until the handler returns.
+    /// </para>
+    /// <para>
+    /// Calling a blocking method from a handler is unsupported. Hand anything slow or blocking to
+    /// another thread, for example with <c>Task.Run</c>, and observe the outcome there, because a
+    /// discarded task loses its status and its exceptions. Work handed off this way no longer runs in
+    /// event order. To signal a waiter, complete a <see cref="TaskCompletionSource{TResult}"/> created
+    /// with <see cref="TaskCreationOptions.RunContinuationsAsynchronously"/>, so its awaiter does not
+    /// continue on the reader thread.
+    /// </para>
+    /// </remarks>
     public void Subscribe(string eventName, Action<BgapiMessage> handler)
     {
         _logger.LogInformation("Subscribe to {EventName}", eventName);

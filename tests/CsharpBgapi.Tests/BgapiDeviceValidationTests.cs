@@ -580,8 +580,16 @@ public class BgapiDeviceValidationTests
         (await received.Task.WaitAsync(Guard)).Should().Be(17);
     }
 
-    [Fact, Trait("Category", "KnownLimitation")]
-    public async Task Reader_SlowSubscriber_BlocksResponseAndSerialDrainingUntilReleased()
+    // Release validation finding F5: a subscriber callback runs inline on the device's only reader
+    // thread, so while it runs nothing is read off the port. A slow callback held every reply and
+    // event behind it, and a callback that sent a command expecting a reply synchronously got
+    // Timeout, because its reply could only be read once the callback returned. These facts
+    // were tagged KnownLimitation as confirmed failures. For 1.0.0 the behaviour is accepted as the
+    // documented Subscribe contract instead of moving callbacks to a dispatcher, which would break
+    // callers that rely on a callback running in order with the replies around it. The facts now
+    // pin that contract: what a blocking callback costs, and that the offload the docs give works.
+    [Fact]
+    public async Task Reader_SlowSubscriber_HoldsTheReaderUntilItReturns()
     {
         using var entered = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
@@ -605,8 +613,8 @@ public class BgapiDeviceValidationTests
         (await command.WaitAsync(Guard)).Status.Should().Be(SlStatus.OK);
     }
 
-    [Fact, Trait("Category", "KnownLimitation")]
-    public async Task Reader_SynchronousCommandInCallback_CannotReadItsResponseBeforeTimeout()
+    [Fact]
+    public async Task Reader_SynchronousCommandInCallback_TimesOutBecauseItsReplyIsNeverRead()
     {
         using var session = new Session();
         var timer = Signal<CancellationTokenSource>();
@@ -620,6 +628,105 @@ public class BgapiDeviceValidationTests
         result.Task.IsCompleted.Should().BeFalse();
         timeout.Cancel();
         (await result.Task.WaitAsync(Guard)).Should().Be(SlStatus.Timeout);
+    }
+
+    [Fact]
+    public async Task Reader_NoReturnCommandInCallback_IsWrittenAndReturnsOk()
+    {
+        using var session = new Session();
+        var result = Signal<SlStatus>();
+        // bt.system.reboot is no_return in sl_bt.xapi: it waits for no response, so the reader is not needed.
+        session.Device.Subscribe("bt_evt_user_message_to_host", _ =>
+            result.TrySetResult(session.Device.SendCommand("bt", "system", "reboot").Status));
+        session.Port.Inject(Wire.Event(session.Device.Definitions, 1));
+        (await result.Task.WaitAsync(Guard)).Should().Be(SlStatus.OK);
+        session.Written.Should().Equal("reboot");
+    }
+
+    [Fact]
+    public async Task Reader_CallbackOffloadingItsCommand_GetsTheReply()
+    {
+        using var session = new Session();
+        var result = Signal<SlStatus>();
+        // No timeout ever fires, so OK can only come from the reader routing the reply.
+        session.Device.ScheduleResponseTimeout = (_, _) => { };
+        session.Port.OnWrite = _ => session.Port.Inject(session.Reply());
+        session.Device.Subscribe("bt_evt_user_message_to_host", _ =>
+            Task.Run(() => result.TrySetResult(session.Device.SendCommand("bt", "system", "halt").Status)));
+        session.Port.Inject(Wire.Event(session.Device.Definitions, 1));
+        (await result.Task.WaitAsync(Guard)).Should().Be(SlStatus.OK);
+    }
+
+    [Fact]
+    public void Reader_CloseFromCallback_ClosesThePortAndOpenThrowsUntilTheCallbackReturns()
+    {
+        using var closed = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var exited = new ManualResetEventSlim();
+        using var oldPort = new SimulatedConnection();
+        using var newPort = new SimulatedConnection();
+        int calls = 0, notStopped = 0;
+        var options = Options.Create(new CsharpBgapiOptions { StopReaderTimeoutSeconds = 0.2 });
+        var logger = new HookLogger(text =>
+        {
+            if (text.StartsWith("BgapiDevice reader did not stop")) Interlocked.Increment(ref notStopped);
+            if (text == "ReaderLoop exited" && closed.IsSet) exited.Set();
+        });
+        using var device = new BgapiDevice(options,
+            new BgapiConnector(options, NullLogger.Instance, (_, _) => ++calls == 1 ? oldPort : newPort), logger);
+        device.LoadDefaultXapis();
+        device.Subscribe("bt_evt_user_message_to_host", _ =>
+        {
+            // Close cannot join the reader: it is this callback's own thread.
+            device.Close();
+            closed.Set();
+            if (!release.Wait(Guard)) throw new TimeoutException("close callback guard");
+        });
+        device.Open("old");
+        oldPort.Inject(Wire.Event(device.Definitions, 1));
+        try
+        {
+            closed.Wait(Guard).Should().BeTrue();
+            notStopped.Should().Be(1);
+            oldPort.IsOpen.Should().BeFalse();
+            device.Invoking(d => d.Open("new")).Should().Throw<InvalidOperationException>().WithMessage("*reader*still running*");
+        }
+        finally { release.Set(); }
+        exited.Wait(Guard).Should().BeTrue();
+        device.Open("new");
+        device.IsOpen.Should().BeTrue();
+        calls.Should().Be(2);
+    }
+
+    [Fact]
+    public void Reader_DisposeFromCallback_ClosesThePortAndTheReaderExitsWhenTheCallbackReturns()
+    {
+        using var disposed = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var exited = new ManualResetEventSlim();
+        int notStopped = 0;
+        using var session = new Session(new HookLogger(text =>
+        {
+            if (text.StartsWith("BgapiDevice reader did not stop")) Interlocked.Increment(ref notStopped);
+            if (text == "ReaderLoop exited" && disposed.IsSet) exited.Set();
+        }), stopSeconds: 0.2);
+        session.Device.Subscribe("bt_evt_user_message_to_host", _ =>
+        {
+            // Dispose, like Close, cannot join the reader: it is this callback's own thread.
+            session.Device.Dispose();
+            disposed.Set();
+            if (!release.Wait(Guard)) throw new TimeoutException("dispose callback guard");
+        });
+        session.Port.Inject(Wire.Event(session.Device.Definitions, 1));
+        try
+        {
+            disposed.Wait(Guard).Should().BeTrue();
+            notStopped.Should().Be(1);
+            session.Port.IsOpen.Should().BeFalse();
+            exited.IsSet.Should().BeFalse("the reader is still inside the callback");
+        }
+        finally { release.Set(); }
+        exited.Wait(Guard).Should().BeTrue();
     }
 
     internal sealed class HookLogger(Action<string> hook) : ILogger

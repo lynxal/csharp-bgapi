@@ -189,6 +189,42 @@ device.Subscribe("btmesh_evt_vendor_model_receive", message =>
 });
 ```
 
+A handler runs on the device's only reader thread, so nothing is read off the port until it returns. A long hold can even overflow the serial receive buffer and lose frames. Keep handlers short, and treat calling a blocking method from one as unsupported:
+
+- A synchronous `SendCommand` (or `AddEventFilter`/`RemoveEventFilter`/`ResetEventFilter`) from a handler returns `SlStatus.Timeout`, because its response cannot be read until the handler returns. The command has usually been sent by then, and the NCP may have acted on it.
+- A `no_return` command such as `bt.system.reboot` returns `OK`, but only after any command already in flight has timed out.
+- Blocking on a `SendCommandAsync` task, starting `RetryUntilAsync` (its event wait can run on the reader thread), waiting for events, and calling `Close`/`Dispose` hold the reader the same way.
+
+Hand that work to another thread, and observe its outcome there. Work handed off this way no longer runs in event order:
+
+```csharp
+device.Subscribe("bt_evt_system_boot", message =>
+{
+    // The command runs on the thread pool, where the reader can deliver its response.
+    // A discarded task loses its status and exceptions, so check them inside it.
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            var response = await device.SendCommandAsync("bt", "system", "get_version");
+            if (response.Status != SlStatus.OK)
+                Console.WriteLine($"get_version failed: {response.Status}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"get_version threw: {ex.Message}");
+        }
+    });
+});
+```
+
+To signal a waiter, use a `TaskCompletionSource` that does not resume its awaiter on the reader thread. This one also needs `using CsharpBgapi.Protocol;` for `BgapiMessage`:
+
+```csharp
+var booted = new TaskCompletionSource<BgapiMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+device.Subscribe("bt_evt_system_boot", message => booted.TrySetResult(message));
+```
+
 ## API Reference
 
 | Class | Responsibility |

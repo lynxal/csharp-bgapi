@@ -7,27 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - Unreleased
 
-### Added
-
-- `WaitEventsAsync` and `WaitEventAsync` on `BgapiEventQueue` and `BgapiDevice`: the same parameters, stop conditions and exceptions as `WaitEvents` and `WaitEvent`, but the wait for the next event is awaited instead of blocking a thread. `WaitEvents` still blocks the caller's own thread and nothing else.
-
-### Changed
-
-- `RetryUntilAsync` no longer holds a thread while it waits for events. It waited through the blocking `WaitEvents`, so with a command that completed synchronously it held the caller's thread for the whole `RetryInterval` of every attempt before returning a task.
-
-### Fixed
-
-- A wait woken by an event that arrived in time now takes that event even when the waiter resumes after its deadline. It used to stop at the deadline and leave the event queued, so `RetryUntilAsync` reported a timeout and re-sent a command whose reply had already arrived.
-- A wait whose deadline was overrun by exactly 1 ms no longer waits without a bound. The overrun equalled `Timeout.InfiniteTimeSpan`, so the wait lasted until the next event arrived, and `GetEvent` on a quiet bus never returned.
-
-## [1.0.0] - Unreleased
-
-First stable release. From here the public API follows Semantic Versioning: breaking changes wait for 2.0.0.
+First stable release (there is no 1.0.0). From here the public API follows Semantic Versioning: breaking changes wait for 2.0.0.
 
 ### Added
 
 - `BgapiDevice.FindPorts()` and `BgapiDevice.DroppedByteCount`, the two `BgapiConnector` members worth keeping public.
 - The `Subscribe` handler contract is documented. Handlers run in order on the device's only reader thread, and nothing is read off the port until a handler returns. A synchronous `SendCommand` from a handler returns `SlStatus.Timeout`, because its response cannot be read until the handler returns. Only `no_return` commands return `OK`. Calling a blocking method from a handler is unsupported; hand the work to another thread. The behaviour itself is unchanged.
+- `WaitEventsAsync` and `WaitEventAsync` on `BgapiEventQueue` and `BgapiDevice`: the same parameters, stop conditions and exceptions as `WaitEvents` and `WaitEvent`, but the wait for the next event is awaited instead of blocking a thread. `WaitEvents` still blocks the caller's own thread and nothing else.
 
 ### Changed
 
@@ -36,7 +22,8 @@ First stable release. From here the public API follows Semantic Versioning: brea
 - **Breaking:** `BgapiDevice.Open` throws `InvalidOperationException` when the device is already open. A second `Open` used to replace the port without closing it and start a second reader thread on the same connector, so two readers raced for frames.
 - **Breaking:** `BgapiDevice.Open` also throws `InvalidOperationException` while the previous session's reader is still running — a subscriber callback held it past `StopReaderTimeoutSeconds`. Retry once the callback has returned. The reader used to be forgotten and run beside the new one.
 - After a command times out, or its caller cancels once it was sent, the next command with the same header is preceded by `bt.system.hello` or `bt.system.get_version`, whichever is not the repeat and has no unanswered send of its own. The NCP answers in order, so the fence's answer proves the late one has passed. If the fence goes unanswered, the command returns `SlStatus.Timeout` without being sent, so such a repeat can take up to twice its timeout. Retrying through an outage keeps fencing, so the command goes out again once the NCP answers. After such retries, a second fence can be needed. An answered command whose header had no unanswered send clears the need for a fence, so a caller that moves on to another command sends nothing extra.
-- CI prerelease packages built after a release tag take the next version as their base (`1.0.1-ci.N` after `v1.0.0`, or the csproj's `AssemblyVersion` when it is already ahead), so they sort above the release they follow. They used to be `X.Y.Z-ci.N`, which SemVer orders below `X.Y.Z`. `N` is the total commit count, not the height from the nearest tag, so a new tag (a hotfix on main, say) no longer restarts it below builds already published.
+- CI prerelease packages built after a release tag take the next version as their base (`1.1.1-ci.N` after `v1.1.0`, or the csproj's `AssemblyVersion` when it is already ahead), so they sort above the release they follow. They used to be `X.Y.Z-ci.N`, which SemVer orders below `X.Y.Z`. `N` is the total commit count, not the height from the nearest tag, so a new tag (a hotfix on main, say) no longer restarts it below builds already published.
+- `RetryUntilAsync` no longer holds a thread while it waits for events. It waited through the blocking `WaitEvents`, so with a command that completed synchronously it held the caller's thread for the whole `RetryInterval` of every attempt before returning a task.
 
 ### Fixed
 
@@ -55,6 +42,8 @@ First stable release. From here the public API follows Semantic Versioning: brea
 - `Dispose` with a command in flight made that command throw `ObjectDisposedException` from its lock instead of its cancellation or timeout, and a caller waiting for the lock was never released. The command in flight now completes as after `Close`; waiting and later callers get `ObjectDisposedException`.
 - After a final `Close` or `Dispose`, the late fault of the serial read still in flight surfaced as `TaskScheduler.UnobservedTaskException`. Only a reopen used to observe it.
 - The package stored its XAPI files as `xapi//sl_bt.xapi` and `xapi//sl_btmesh.xapi`, with an empty path segment, when packed on Linux, as every published package was. They are now `xapi/sl_bt.xapi` and `xapi/sl_btmesh.xapi`.
+- A wait woken by an event that arrived in time now takes that event even when the waiter resumes after its deadline. It used to stop at the deadline and leave the event queued, so `RetryUntilAsync` reported a timeout and re-sent a command whose reply had already arrived.
+- A wait whose deadline was overrun by exactly 1 ms no longer waits without a bound. The overrun equalled `Timeout.InfiniteTimeSpan`, so the wait lasted until the next event arrived, and `GetEvent` on a quiet bus never returned.
 
 ## [0.3.0] - 2026-10-22
 

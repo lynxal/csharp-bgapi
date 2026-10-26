@@ -185,20 +185,16 @@ public class BgapiDeviceValidationTests
     public async Task SendCommandAsync_NoReturnCancelledAsTheLockIsGranted_IsNotWritten()
     {
         using var session = new Session();
-        var active = session.Send();
         using var cancellation = new CancellationTokenSource();
-        var context = new QueuedContext();
-        var waiting = context.Run(() => session.Device.SendCommandAsync("bt", "system", "reset", ct: cancellation.Token));
-        session.Port.Inject(session.Reply());
-        (await active.WaitAsync(Guard)).Status.Should().Be(SlStatus.OK);
-        // The lock was released to the waiter, whose continuation is queued and has not run.
-        cancellation.Cancel();
-        context.RunUntil(waiting);
-        await ((Func<Task>)(() => waiting.WaitAsync(Guard))).Should().ThrowAsync<OperationCanceledException>();
-        session.Written.Should().Equal("halt");
+        // Cancelled once the lock is granted, before anything else reads the token.
+        session.Device.LockGranted = cancellation.Cancel;
+        await ((Func<Task>)(() => session.Device.SendCommandAsync("bt", "system", "reset", ct: cancellation.Token).WaitAsync(Guard)))
+            .Should().ThrowAsync<OperationCanceledException>();
+        session.Written.Should().BeEmpty();
 
+        session.Device.LockGranted = null;
         (await session.Device.SendCommandAsync("bt", "system", "reset").WaitAsync(Guard)).Status.Should().Be(SlStatus.OK);
-        session.Written.Should().Equal("halt", "reset");
+        session.Written.Should().Equal("reset");
     }
 
     [Fact]
@@ -366,7 +362,6 @@ public class BgapiDeviceValidationTests
         (await Send("hello").WaitAsync(Guard)).Status.Should().Be(SlStatus.Timeout);
 
         // Repeating hello sends a get_version fence, whose timeout fires as its answer is routed.
-        // The wait's continuation is queued, so it runs after the reader has completed the fence.
         // Guard bounds the fence should the reader never fire it.
         session.Device.ScheduleResponseTimeout = (source, _) =>
         {
@@ -375,34 +370,11 @@ public class BgapiDeviceValidationTests
             captured.Set();
         };
         armed = 1;
-        var context = new QueuedContext();
-        var raced = context.Run(() => Send("hello"));
-        context.RunUntil(raced);
-        (await raced.WaitAsync(Guard)).Status.Should().Be(SlStatus.Timeout);
+        (await Send("hello").WaitAsync(Guard)).Status.Should().Be(SlStatus.Timeout);
 
         session.Device.ScheduleResponseTimeout = (source, timeout) => source.CancelAfter(timeout);
         (await Send("get_version").WaitAsync(Guard)).Status.Should().Be(SlStatus.OK);
         session.Written.Should().Equal("get_version", "hello", "get_version", "hello", "hello", "get_version");
-    }
-
-    // Posts continuations to a queue that only the test thread runs.
-    private sealed class QueuedContext : SynchronizationContext
-    {
-        private readonly System.Collections.Concurrent.BlockingCollection<(SendOrPostCallback, object?)> _queue = [];
-        public override void Post(SendOrPostCallback callback, object? state) => _queue.Add((callback, state));
-        public T Run<T>(Func<T> start)
-        {
-            var previous = Current;
-            SetSynchronizationContext(this);
-            try { return start(); }
-            finally { SetSynchronizationContext(previous); }
-        }
-        public void RunUntil(Task task)
-        {
-            var guard = System.Diagnostics.Stopwatch.StartNew();
-            while (!task.IsCompleted && guard.Elapsed < Guard)
-                if (_queue.TryTake(out var item, 10)) Run(() => { item.Item1(item.Item2); return 0; });
-        }
     }
 
     [Fact]
@@ -727,6 +699,117 @@ public class BgapiDeviceValidationTests
         }
         finally { release.Set(); }
         exited.Wait(Guard).Should().BeTrue();
+    }
+
+    // A caller on a single-threaded SynchronizationContext (a WinForms or WPF UI thread) that called
+    // the sync SendCommand never got it back. The library's awaits captured that context, so the
+    // awaited response posted its continuation to the very thread blocked in GetResult, and the
+    // response timeout could not break it: its continuation needed the same thread. RetryUntilAsync
+    // awaited its command, its retry delay and its event waits the same way.
+
+    [Fact]
+    public void SendCommand_OnASingleThreadedContext_ReturnsTheResponse()
+    {
+        using var session = new Session();
+        session.Port.OnWrite = _ => session.Port.Inject(session.Reply());
+        OnBlockedContext(() => session.Device.SendCommand("bt", "system", "halt").Status).Should().Be(SlStatus.OK);
+    }
+
+    [Fact]
+    public void RetryUntilAsync_BlockedOnASingleThreadedContext_Completes()
+    {
+        using var session = new Session();
+        int attempts = 0;
+        session.Port.OnWrite = _ =>
+        {
+            int attempt = ++attempts;
+            session.Port.Inject([.. Wire.Event(session.Device.Definitions, attempt),
+                .. session.Reply((ushort)(attempt == 1 ? SlStatus.Busy : SlStatus.OK))]);
+        };
+        // A non-zero interval, so the retry delay is a real await rather than a completed task.
+        var events = OnBlockedContext(() => session.Device.RetryUntilAsync(() => session.Send(),
+            new CallableSelector((message, _) => Wire.Sequence(message) == 2 ? EventCategory.SelectFinal : EventCategory.Ignore),
+            new RetryParams { RetryMax = 1, RetryCmdMax = 2, RetryCmdInterval = TimeSpan.FromMilliseconds(1), RetryInterval = Guard })
+            .GetAwaiter().GetResult());
+        events.Select(Wire.Sequence).Should().Equal(2);
+        attempts.Should().Be(2);
+    }
+
+    // Runs call on a thread whose SynchronizationContext drops every post, as a UI thread blocked in a
+    // synchronous call never runs one. Throws when call has not returned within Guard.
+    private static T OnBlockedContext<T>(Func<T> call)
+    {
+        T result = default!;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new BlockedContext());
+            try { result = call(); }
+            catch (Exception ex) { failure = ex; }
+        }) { IsBackground = true };
+        thread.Start();
+        if (!thread.Join(Guard))
+            throw new TimeoutException("the call never returned: a continuation was posted to its blocked thread");
+        if (failure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+        return result;
+    }
+
+    private sealed class BlockedContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback callback, object? state) { }
+    }
+
+    // LogDebug(template, args) builds its params array and boxes every value argument before the
+    // logger is asked whether Debug is on. With Debug off, the reader still paid that for every frame,
+    // every dispatched event and every command, and every WaitEvents call paid it too.
+    [Fact]
+    public async Task HotPaths_DebugDisabled_MakeNoDebugCallWithArguments()
+    {
+        var logger = new DebugOffLogger();
+        var options = Options.Create(new CsharpBgapiOptions { MaxQueuedEvents = 1 });
+        using var port = new SimulatedConnection();
+        using var device = new BgapiDevice(options, new BgapiConnector(options, logger, (_, _) => port), logger);
+        device.LoadDefaultXapis();
+        device.Open("simulated");
+        var third = Signal<bool>();
+        device.Subscribe("bt_evt_user_message_to_host", message =>
+        {
+            if (Wire.Sequence(message) == 3) third.TrySetResult(true);
+        });
+        port.OnWrite = written => port.Inject(Wire.ResponseTo(device.Definitions, written));
+
+        (await device.SendCommandAsync("bt", "system", "halt").WaitAsync(Guard)).Status.Should().Be(SlStatus.OK);
+        // 0xFF carries device id 15, which no loaded API has: one resync episode, so every drop after
+        // the first logs at Debug.
+        port.Inject([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        port.Inject([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        foreach (var sequence in new[] { 1, 2, 3 })
+            port.Inject(Wire.Event(device.Definitions, sequence));
+        await third.Task.WaitAsync(Guard);
+        device.WaitEvents(new CallableSelector((message, _) =>
+                Wire.Sequence(message) == 3 ? EventCategory.SelectFinal : EventCategory.Ignore), Guard)
+            .Select(Wire.Sequence).Should().Equal(3);
+
+        device.DroppedByteCount.Should().Be(10);
+        device.EventQueue.DroppedEventCount.Should().Be(2, "a one-event queue evicts twice, the second time at Debug");
+        logger.DebugWithArguments.Should().BeEmpty();
+    }
+
+    // Reports Debug as off, as a production host does, and records each Debug or Trace call that
+    // still arrives carrying arguments.
+    private sealed class DebugOffLogger : ILogger
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<string> DebugWithArguments { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => level > LogLevel.Debug;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            // The state lists {OriginalFormat} after the arguments, so more than one entry means arguments.
+            if (level <= LogLevel.Debug && state is IReadOnlyList<KeyValuePair<string, object?>> { Count: > 1 })
+                DebugWithArguments.Enqueue(formatter(state, exception));
+        }
     }
 
     internal sealed class HookLogger(Action<string> hook) : ILogger

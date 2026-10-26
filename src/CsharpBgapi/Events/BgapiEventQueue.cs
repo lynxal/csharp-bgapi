@@ -105,7 +105,9 @@ public sealed class BgapiEventQueue
                 "Event queue full ({Max} events): dropped the oldest unclaimed event ({Total} dropped so far). Events accumulate when no WaitEvents consumer takes them — raise CsharpBgapiOptions.MaxQueuedEvents, consume them, or Clear() the queue; further drops log at Debug",
                 _maxQueued, total);
         }
-        else
+        // Every event after the first drop of an episode lands here, on the reader thread; with Debug
+        // off it used to pay for the params array and boxed counts LogDebug builds before asking.
+        else if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug(
                 "Event queue full ({Max} events): dropped the oldest unclaimed event ({Total} dropped so far)",
@@ -283,8 +285,11 @@ public sealed class BgapiEventQueue
         var effectiveMaxTime = maxTime ?? TimeSpan.FromSeconds(_config.WaitEventsDefaultMaxTimeSeconds);
         var budget = Earlier(timeout, effectiveMaxTime);
 
-        _logger.LogDebug("WaitEvents: selector={Selector} timeout={Timeout}ms maxTime={MaxTime}ms finalEventCount={FinalEventCount}",
-            selector, timeout.TotalMilliseconds, effectiveMaxTime.TotalMilliseconds, finalEventCount);
+        // A receive loop calls this every few hundred milliseconds. With Debug off it used to pay for
+        // the params array and boxed numbers LogDebug builds before the logger is asked.
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("WaitEvents: selector={Selector} timeout={Timeout}ms maxTime={MaxTime}ms finalEventCount={FinalEventCount}",
+                selector, timeout.TotalMilliseconds, effectiveMaxTime.TotalMilliseconds, finalEventCount);
 
         // Every queued event with Seq > cursor is still unexamined by THIS call. Each call examines
         // each event at most once and removes only what its selector takes; what it ignores stays
@@ -314,7 +319,7 @@ public sealed class BgapiEventQueue
             if (scan == Scan.Skipped) continue;
             if (scan == Scan.Exhausted)
             {
-                if (expired || !await WaitForArrival(sync, arrival!, remaining, ct)) break;
+                if (expired || !await WaitForArrival(sync, arrival!, remaining, ct).ConfigureAwait(false)) break;
                 woken = true;
                 continue;
             }
@@ -357,7 +362,7 @@ public sealed class BgapiEventQueue
                     if (scan == Scan.Skipped) continue;
                     if (scan == Scan.Exhausted)
                     {
-                        if (!await WaitForArrival(sync, arrival!, remaining, ct)) break;
+                        if (!await WaitForArrival(sync, arrival!, remaining, ct).ConfigureAwait(false)) break;
                         continue;
                     }
 
@@ -491,7 +496,7 @@ public sealed class BgapiEventQueue
             // throw and catch one per poll. Suppressed here, the outcome is read off the ticket, and
             // cancellation is rethrown as the same OperationCanceledException the blocking wait throws.
             await ((Task)arrival.Task.WaitAsync(TimeSpan.FromMilliseconds(ms), ct))
-                .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing | ConfigureAwaitOptions.ContinueOnCapturedContext);
+                .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             ct.ThrowIfCancellationRequested();
             signaled = arrival.Task.IsCompleted;
         }
@@ -530,6 +535,12 @@ public sealed class BgapiEventQueue
     /// - If eventSelector is null, returns an empty BgapiEventList as soon as the command succeeds
     ///   (no event waiting)
     /// </summary>
+    /// <remarks>
+    /// The first call to <paramref name="command"/> runs on the caller's thread. Later attempts, and
+    /// selectors examined while waiting for events, may run on a thread-pool thread: no await here
+    /// resumes on the caller's SynchronizationContext, so a caller blocked on this task on a UI thread
+    /// still gets it back.
+    /// </remarks>
     public async Task<BgapiEventList> RetryUntilAsync(
         Func<Task<BgapiCommandResponse>> command,
         EventSelector? eventSelector,
@@ -571,7 +582,7 @@ public sealed class BgapiEventQueue
             {
                 try
                 {
-                    cmdResponse = await command();
+                    cmdResponse = await command().ConfigureAwait(false);
 
                     if (cmdResponse.Status != SlStatus.OK)
                     {
@@ -598,7 +609,7 @@ public sealed class BgapiEventQueue
                                     keepAllEvents: keepAllEvents,
                                     paramSubs: paramSubs,
                                     selectedEvents: selectedEvents,
-                                    ct: ct);
+                                    ct: ct).ConfigureAwait(false);
                                 goto ReturnEvents;
                             }
                             catch (BgapiWaitEventException)
@@ -612,7 +623,7 @@ public sealed class BgapiEventQueue
                         {
                             // Wait before retrying
                             if (cmdAttempt < retryParams.RetryCmdMax)
-                                await Task.Delay(retryParams.RetryCmdInterval, ct);
+                                await Task.Delay(retryParams.RetryCmdInterval, ct).ConfigureAwait(false);
                             continue;
                         }
                     }
@@ -674,7 +685,7 @@ public sealed class BgapiEventQueue
                         keepAllEvents: keepAllEvents,
                         paramSubs: paramSubs,
                         selectedEvents: selectedEvents,
-                        ct: ct);
+                        ct: ct).ConfigureAwait(false);
                 }
                 catch (BgapiWaitEventException ex)
                 {
@@ -727,7 +738,7 @@ public sealed class BgapiEventQueue
             }
 
             if (retryCount < retryParams.RetryMax)
-                await Task.Delay(retryParams.RetryInterval, ct);
+                await Task.Delay(retryParams.RetryInterval, ct).ConfigureAwait(false);
         }
 
         // Max retries exhausted

@@ -189,7 +189,10 @@ internal sealed class BgapiConnector : IDisposable
         if (_port is not { IsOpen: true })
             throw new InvalidOperationException("Serial port is not open");
 
-        _logger.LogDebug("Sending command: {ByteCount} bytes", data.Length);
+        // LogDebug builds its params array and boxes the count before the logger is asked, so with
+        // Debug off every command used to pay for a line nobody read.
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Sending command: {ByteCount} bytes", data.Length);
 
         lock (_sendLock)
         {
@@ -383,9 +386,12 @@ internal sealed class BgapiConnector : IDisposable
         // would otherwise log on every poll and bury the signal the counter exists to give.
         if (_resyncLogged)
         {
-            _logger.LogDebug(
-                "Serial resync: dropped {Dropped} byte(s) that {Reason} ({Total} total since open)",
-                count, reason, total);
+            // A noisy line drops bytes on every poll; with Debug off, the params array and boxed
+            // counts LogDebug builds before asking the logger were paid on each of them.
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug(
+                    "Serial resync: dropped {Dropped} byte(s) that {Reason} ({Total} total since open)",
+                    count, reason, total);
             return;
         }
 

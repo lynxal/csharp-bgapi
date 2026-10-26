@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using CsharpBgapi.Events;
 using CsharpBgapi.Protocol;
 using FluentAssertions;
@@ -222,42 +221,19 @@ public class BgapiEventQueueAsyncTests
         // The window ran out first and the event arrived before the waiter resumed. It completed
         // the ticket the waiter held, but it came late, so the wait times out without it.
         var queue = new BgapiEventQueue();
-        var context = new QueuedContext();
-        Task<BgapiEventList> wait;
-        var previous = SynchronizationContext.Current;
-        SynchronizationContext.SetSynchronizationContext(context);
-        try { wait = queue.WaitEventsAsync(Select(BlockStatusEvent), Short, maxTime: Short); }
-        finally { SynchronizationContext.SetSynchronizationContext(previous); }
-
-        SpinWait.SpinUntil(() => context.HasWork, Guard).Should().BeTrue("the window runs out before the event arrives");
         var late = Event(BlockStatusEvent);
-        queue.Enqueue(late);
-        context.RunAll();
+        // The waiter has taken its ticket. Held until its window has run out, it then sees the
+        // event complete that ticket before it looks.
+        queue.BeforeArrival = () =>
+        {
+            Thread.Sleep(Short * 2);
+            queue.Enqueue(late);
+        };
+        var wait = queue.WaitEventsAsync(Select(BlockStatusEvent), Short, maxTime: Short);
 
         var act = () => wait.WaitAsync(Guard);
         await act.Should().ThrowAsync<BgapiWaitEventException>();
         queue.GetEvent(TimeSpan.Zero).Should().BeSameAs(late);
-    }
-
-    // Holds every continuation posted to it until RunAll, so a test decides when a waiter resumes.
-    private sealed class QueuedContext : SynchronizationContext
-    {
-        private readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _posted = new();
-
-        public bool HasWork => !_posted.IsEmpty;
-
-        public override void Post(SendOrPostCallback d, object? state) => _posted.Enqueue((d, state));
-
-        public void RunAll()
-        {
-            var previous = Current;
-            SetSynchronizationContext(this);
-            try
-            {
-                while (_posted.TryDequeue(out var work)) work.Callback(work.State);
-            }
-            finally { SetSynchronizationContext(previous); }
-        }
     }
 
     [Fact]

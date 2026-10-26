@@ -81,4 +81,27 @@ public class BgapiDeviceSubscribeTests
         act.Should().NotThrow("a handler's exception must never reach the reader thread");
         calls.Should().Be(1);
     }
+
+    // Dispatch runs on the reader thread for every event. It used to lock the handler list and copy
+    // it into a new array per event, and its Debug lines built a params array (and boxed the handler
+    // count) even with Debug off.
+    [Fact]
+    public void DispatchToHandlers_DebugOff_AllocatesNothing()
+    {
+        using var device = new BgapiDevice();
+        device.Subscribe(VendorReceive, static _ => { });
+        var subscribed = Event(VendorReceive);
+        var unsubscribed = Event("btmesh_evt_vendor_model_send_complete");
+        device.DispatchToHandlers(subscribed);
+        device.DispatchToHandlers(unsubscribed);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++)
+        {
+            device.DispatchToHandlers(subscribed);
+            device.DispatchToHandlers(unsubscribed);
+        }
+
+        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+    }
 }

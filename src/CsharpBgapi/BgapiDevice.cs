@@ -37,7 +37,10 @@ public sealed class BgapiDevice : IDisposable
     // one is fenced by the other.
     private static readonly (string Api, string Class, string Command)[] FenceCommands =
         [("bt", "system", "hello"), ("bt", "system", "get_version")];
-    private readonly ConcurrentDictionary<string, List<Action<BgapiMessage>>> _eventHandlers = new();
+    // Each array is replaced, never changed, so dispatch reads one without a lock. Dispatch used to
+    // lock a List and copy it into a new array for every event, on the reader thread.
+    private readonly ConcurrentDictionary<string, Action<BgapiMessage>[]> _eventHandlers = new();
+    private readonly Lock _subscriptionLock = new();
     // volatile: written by the command thread, read by the reader thread
     private volatile PendingCommand? _pendingCommand;
     private CancellationTokenSource? _readerCts;
@@ -45,6 +48,8 @@ public sealed class BgapiDevice : IDisposable
     private bool _disposed;
     internal Action<CancellationTokenSource, TimeSpan> ScheduleResponseTimeout { get; set; } =
         static (source, timeout) => source.CancelAfter(timeout);
+    // Validation runs code between a command being granted the lock and anything after it.
+    internal Action? LockGranted { get; set; }
 
     public BgapiEventQueue EventQueue => _eventQueue;
     public BgapiProtocol Protocol => _protocol;
@@ -203,12 +208,17 @@ public sealed class BgapiDevice : IDisposable
         var cmdDef = _definitions.GetCommand(apiName, className, commandName);
         var effectiveTimeout = timeout ?? ResponseTimeout;
 
-        _logger.LogDebug("SendCommandAsync {Api}.{Class}.{Command} noReturn={NoReturn}",
-            apiName, className, commandName, cmdDef.NoReturn);
+        // LogDebug builds its params array and boxes noReturn before the logger is asked, so with
+        // Debug off every command used to pay for a line nobody read.
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("SendCommandAsync {Api}.{Class}.{Command} noReturn={NoReturn}",
+                apiName, className, commandName, cmdDef.NoReturn);
 
-        await _commandLock.WaitAsync(ct);
+        await _commandLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            LockGranted?.Invoke();
+
             // Checked once the lock is held, so a caller that was waiting for it when the device
             // was disposed fails here rather than on the connector.
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -238,7 +248,7 @@ public sealed class BgapiDevice : IDisposable
 
                 _logger.LogInformation("Sending {Fence} to drain the answer of an unanswered {Api}.{Class}.{Command}",
                     fenceName, apiName, className, commandName);
-                if (await ExchangeAsync(fence, fenceHeader, effectiveTimeout, ct) is null)
+                if (await ExchangeAsync(fence, fenceHeader, effectiveTimeout, ct).ConfigureAwait(false) is null)
                 {
                     _logger.LogWarning(
                         "Command {Api}.{Class}.{Command} not sent: an earlier one with its header is unanswered and the NCP did not answer {Fence}",
@@ -247,7 +257,7 @@ public sealed class BgapiDevice : IDisposable
                 }
             }
 
-            var response = await ExchangeAsync(data, header, effectiveTimeout, ct);
+            var response = await ExchangeAsync(data, header, effectiveTimeout, ct).ConfigureAwait(false);
             if (response is null)
             {
                 _logger.LogWarning("Command {Api}.{Class}.{Command} timed out after {Timeout}ms",
@@ -298,7 +308,7 @@ public sealed class BgapiDevice : IDisposable
 
             try
             {
-                var response = await tcs.Task;
+                var response = await tcs.Task.ConfigureAwait(false);
                 RecordAnswered(Identity(header), send);
                 return response;
             }
@@ -393,10 +403,18 @@ public sealed class BgapiDevice : IDisposable
     /// Synchronous convenience wrapper for SendCommandAsync.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Calling it from a <see cref="Subscribe"/> handler is unsupported. The handler holds the reader
     /// thread, so a command that expects a response gets <see cref="SlStatus.Timeout"/>. Even a
     /// <c>no_return</c> command first waits out any command already in flight. See
     /// <see cref="Subscribe"/>.
+    /// </para>
+    /// <para>
+    /// Safe on a thread with a single-threaded SynchronizationContext, such as a UI thread, because no
+    /// library await resumes on the caller's context. They used to, and this call then never returned
+    /// there: the awaited response posted its continuation to the very thread blocked here, and the
+    /// timeout's continuation needed that thread too.
+    /// </para>
     /// </remarks>
     public BgapiCommandResponse SendCommand(
         string apiName,
@@ -560,17 +578,12 @@ public sealed class BgapiDevice : IDisposable
     public void Subscribe(string eventName, Action<BgapiMessage> handler)
     {
         _logger.LogInformation("Subscribe to {EventName}", eventName);
-        _eventHandlers.AddOrUpdate(eventName,
-            _ => [handler],
-            (_, list) =>
-            {
-                lock (list)
-                {
-                    if (!list.Contains(handler))
-                        list.Add(handler);
-                }
-                return list;
-            });
+        lock (_subscriptionLock)
+        {
+            var handlers = _eventHandlers.TryGetValue(eventName, out var current) ? current : [];
+            if (Array.IndexOf(handlers, handler) < 0)
+                _eventHandlers[eventName] = [.. handlers, handler];
+        }
     }
 
     /// <summary>
@@ -579,12 +592,13 @@ public sealed class BgapiDevice : IDisposable
     public void Unsubscribe(string eventName, Action<BgapiMessage> handler)
     {
         _logger.LogInformation("Unsubscribe from {EventName}", eventName);
-        if (_eventHandlers.TryGetValue(eventName, out var list))
+        lock (_subscriptionLock)
         {
-            lock (list)
-            {
-                list.Remove(handler);
-            }
+            if (!_eventHandlers.TryGetValue(eventName, out var handlers))
+                return;
+            int index = Array.IndexOf(handlers, handler);
+            if (index >= 0)
+                _eventHandlers[eventName] = [.. handlers[..index], .. handlers[(index + 1)..]];
         }
     }
 
@@ -701,13 +715,16 @@ public sealed class BgapiDevice : IDisposable
                     if (message is null)
                         continue;
 
-                    _logger.LogDebug("Received message: {Type} name={EventName} dev={DeviceId} cls={ClassIndex} idx={CommandIndex} payloadLen={PayloadLen}",
-                        message.IsEvent ? "Event" : "Response",
-                        message.EventName ?? "(null)",
-                        message.DeviceId,
-                        message.ClassIndex,
-                        message.CommandIndex,
-                        message.Header.PayloadLength);
+                    // LogDebug builds its params array and boxes the header fields before the logger
+                    // is asked, so with Debug off every frame used to pay for a line nobody read.
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                        _logger.LogDebug("Received message: {Type} name={EventName} dev={DeviceId} cls={ClassIndex} idx={CommandIndex} payloadLen={PayloadLen}",
+                            message.IsEvent ? "Event" : "Response",
+                            message.EventName ?? "(null)",
+                            message.DeviceId,
+                            message.ClassIndex,
+                            message.CommandIndex,
+                            message.Header.PayloadLength);
 
                     // Close cancelled this reader while it was reading: the message belongs to the
                     // closed session and must reach neither the queue, a pending command nor a
@@ -794,25 +811,23 @@ public sealed class BgapiDevice : IDisposable
 
     internal void DispatchToHandlers(BgapiMessage message)
     {
+        // Runs on the reader for every event. LogDebug builds its params array (and boxes the count)
+        // before the logger is asked, so with Debug off each event used to pay for these lines.
+        bool debug = _logger.IsEnabled(LogLevel.Debug);
         if (message.EventName is null)
         {
-            _logger.LogDebug("Event has null EventName (dev={DeviceId} cls={ClassIndex} idx={CommandIndex}) — skipping dispatch",
-                message.DeviceId, message.ClassIndex, message.CommandIndex);
+            if (debug)
+                _logger.LogDebug("Event has null EventName (dev={DeviceId} cls={ClassIndex} idx={CommandIndex}) — skipping dispatch",
+                    message.DeviceId, message.ClassIndex, message.CommandIndex);
             return;
         }
 
         if (_eventHandlers.TryGetValue(message.EventName, out var handlers))
         {
-            // Copy list to avoid holding lock during invocation
-            Action<BgapiMessage>[] snapshot;
-            lock (handlers)
-            {
-                snapshot = [.. handlers];
-            }
+            if (debug)
+                _logger.LogDebug("Dispatching {EventName} to {HandlerCount} handler(s)", message.EventName, handlers.Length);
 
-            _logger.LogDebug("Dispatching {EventName} to {HandlerCount} handler(s)", message.EventName, snapshot.Length);
-
-            foreach (var handler in snapshot)
+            foreach (var handler in handlers)
             {
                 try
                 {
@@ -824,7 +839,7 @@ public sealed class BgapiDevice : IDisposable
                 }
             }
         }
-        else
+        else if (debug)
         {
             _logger.LogDebug("No handlers registered for {EventName}", message.EventName);
         }

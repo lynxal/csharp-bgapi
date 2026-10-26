@@ -584,7 +584,7 @@ public class BgapiDeviceValidationTests
     // thread, so while it runs nothing is read off the port. A slow callback held every reply and
     // event behind it, and a callback that sent a command expecting a reply synchronously got
     // Timeout, because its reply could only be read once the callback returned. These facts
-    // were tagged KnownLimitation as confirmed failures. For 1.0.0 the behaviour is accepted as the
+    // were tagged KnownLimitation as confirmed failures. For 1.1.0 the behaviour is accepted as the
     // documented Subscribe contract instead of moving callbacks to a dispatcher, which would break
     // callers that rely on a callback running in order with the replies around it. The facts now
     // pin that contract: what a blocking callback costs, and that the offload the docs give works.

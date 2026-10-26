@@ -40,7 +40,9 @@ public sealed class BgapiEventQueue
     internal Action? AfterArrival { get; set; }
     internal Action? BeforeArrival { get; set; }
 
-    private readonly record struct QueuedEvent(long Seq, BgapiMessage Message);
+    // ArrivedAt is the Stopwatch timestamp of the Enqueue, for telling an event that came before a
+    // waiter's deadline from one that came after.
+    private readonly record struct QueuedEvent(long Seq, BgapiMessage Message, long ArrivedAt);
 
     private static TaskCompletionSource<bool> NewTicket() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -80,7 +82,7 @@ public sealed class BgapiEventQueue
 
         lock (_gate)
         {
-            _events.Add(new QueuedEvent(_nextSeq++, message));
+            _events.Add(new QueuedEvent(_nextSeq++, message, Stopwatch.GetTimestamp()));
             if (_events.Count > _maxQueued)
             {
                 _events.RemoveAt(0);
@@ -131,9 +133,11 @@ public sealed class BgapiEventQueue
                 arrival = _arrival;
             }
 
-            var remaining = timeout == Timeout.InfiniteTimeSpan ? timeout : timeout - Stopwatch.GetElapsedTime(start);
-            if (Expired(remaining) || !WaitForArrival(arrival, remaining, CancellationToken.None))
-                return null;
+            var remaining = Remaining(timeout, Stopwatch.GetElapsedTime(start));
+            if (Expired(remaining)) return null;
+            var waited = WaitForArrival(sync: true, arrival, remaining, CancellationToken.None);
+            Debug.Assert(waited.IsCompleted, "the sync path must complete synchronously; see WaitForArrival");
+            if (!waited.GetAwaiter().GetResult()) return null;
         }
     }
 
@@ -147,6 +151,24 @@ public sealed class BgapiEventQueue
         CancellationToken ct = default)
     {
         return WaitEvents(selector, timeout,
+            maxEvents: 1,
+            maxTime: timeout,
+            finalEventCount: 1,
+            paramSubs: paramSubs,
+            ct: ct);
+    }
+
+    /// <summary>
+    /// Wait for a single matching event without blocking a thread. Shorthand for WaitEventsAsync
+    /// with finalEventCount=1.
+    /// </summary>
+    public Task<BgapiEventList> WaitEventAsync(
+        EventSelector selector,
+        TimeSpan timeout,
+        Dictionary<string, object>? paramSubs = null,
+        CancellationToken ct = default)
+    {
+        return WaitEventsAsync(selector, timeout,
             maxEvents: 1,
             maxTime: timeout,
             finalEventCount: 1,
@@ -183,15 +205,51 @@ public sealed class BgapiEventQueue
         bool keepAllEvents = false,
         Dictionary<string, object>? paramSubs = null,
         BgapiEventList? selectedEvents = null,
-        CancellationToken ct = default) =>
-        WaitEvents(null, selector, timeout, maxEvents, maxTime, resetTimeoutOnEvent, finalEventCount,
+        CancellationToken ct = default)
+    {
+        var waited = WaitEventsCore(sync: true, null, selector, timeout, maxEvents, maxTime, resetTimeoutOnEvent, finalEventCount,
             softFinalEventCount, softFinalEventProcTime, keepAllEvents, paramSubs, selectedEvents, ct);
+        Debug.Assert(waited.IsCompleted, "the sync path must complete synchronously; see WaitEventsCore");
+        return waited.GetAwaiter().GetResult();
+    }
 
     /// <summary>
-    /// The public WaitEvents, also adding each event it counts toward the final count to
+    /// Wait for events matching a selector without blocking a thread. Ports Python
+    /// BGLibExt.wait_events, as <see cref="WaitEvents"/> does: same parameters, same stop
+    /// conditions, same exceptions — only the wait for the next event is awaited instead of blocked.
+    /// </summary>
+    public Task<BgapiEventList> WaitEventsAsync(
+        EventSelector selector,
+        TimeSpan timeout,
+        int maxEvents = int.MaxValue,
+        TimeSpan? maxTime = null,
+        bool resetTimeoutOnEvent = false,
+        int? finalEventCount = 1,
+        int? softFinalEventCount = null,
+        TimeSpan? softFinalEventProcTime = null,
+        bool keepAllEvents = false,
+        Dictionary<string, object>? paramSubs = null,
+        BgapiEventList? selectedEvents = null,
+        CancellationToken ct = default) =>
+        WaitEventsCore(sync: false, null, selector, timeout, maxEvents, maxTime, resetTimeoutOnEvent, finalEventCount,
+            softFinalEventCount, softFinalEventProcTime, keepAllEvents, paramSubs, selectedEvents, ct).AsTask();
+
+    /// <summary>
+    /// WaitEvents and WaitEventsAsync, also adding each event it counts toward the final count to
     /// <paramref name="counted"/>, so RetryUntilAsync can take back the count of one it drops.
     /// </summary>
-    private BgapiEventList WaitEvents(
+    /// <remarks>
+    /// <paramref name="sync"/> picks how the call waits for the next event, and nothing else.
+    /// RetryUntilAsync used to call the blocking WaitEvents, so once its command completed
+    /// synchronously it held the caller's thread for every event wait before it returned a task.
+    /// The sync path is not a wrapper over the async one: <c>WaitEventsAsync(...).GetAwaiter().GetResult()</c>
+    /// would need a second pool thread to resume on at every arrival while the caller's own thread
+    /// sat blocked — the starvation the async path exists to avoid. So with <c>sync: true</c> the
+    /// only wait is a blocking one, every await below completes synchronously, and the call runs
+    /// start to finish on the caller's thread.
+    /// </remarks>
+    private async ValueTask<BgapiEventList> WaitEventsCore(
+        bool sync,
         HashSet<BgapiMessage>? counted,
         EventSelector selector,
         TimeSpan timeout,
@@ -232,23 +290,32 @@ public sealed class BgapiEventQueue
         // each event at most once and removes only what its selector takes; what it ignores stays
         // in place for other waiters, so nothing is ever held, re-ordered or lost on cancellation.
         long cursor = -1;
-        var clock = Stopwatch.StartNew();
+        long started = Stopwatch.GetTimestamp();
         bool thresholdReached = false;
         bool maxEventsReached = false;
+        bool woken = false;
 
         while (true)
         {
             // Cancellation and the deadline are checked between candidates, so a backlog, a steady
             // stream of ignored events, or a slow selector cannot carry the call past its budget.
+            // Past the deadline, one candidate is still examined after a wake, if it arrived before
+            // the deadline: an awaiting waiter resumes only once a pool thread is free. A completed
+            // ticket alone is no proof — a waiter paused before its wait finds the ticket completed
+            // by whatever came while it was paused.
             ct.ThrowIfCancellationRequested();
-            var remaining = Remaining(budget, clock);
-            if (Expired(remaining)) break;
+            var remaining = Remaining(budget, Stopwatch.GetElapsedTime(started));
+            var expired = Expired(remaining);
+            if (expired && !woken) break;
+            woken = false;
+            var arrivedBy = expired ? started + (long)(budget.TotalSeconds * Stopwatch.Frequency) : long.MaxValue;
 
-            var scan = ScanNext(selector, selected, keepAllEvents, ref cursor, out var message, out var category, out var arrival);
+            var scan = ScanNext(selector, selected, keepAllEvents, ref cursor, out var message, out var category, out var arrival, arrivedBy);
             if (scan == Scan.Skipped) continue;
             if (scan == Scan.Exhausted)
             {
-                if (!WaitForArrival(arrival!, remaining, ct)) break;
+                if (expired || !await WaitForArrival(sync, arrival!, remaining, ct)) break;
+                woken = true;
                 continue;
             }
 
@@ -265,7 +332,7 @@ public sealed class BgapiEventQueue
             }
 
             if (category != EventCategory.Ignore && resetTimeoutOnEvent)
-                clock.Restart();
+                started = Stopwatch.GetTimestamp();
 
             if (selected.Count >= maxEvents)
             {
@@ -283,14 +350,14 @@ public sealed class BgapiEventQueue
                 while (true)
                 {
                     ct.ThrowIfCancellationRequested();
-                    var remaining = softFinalEventProcTime.Value - window.Elapsed;
+                    var remaining = Remaining(softFinalEventProcTime.Value, window.Elapsed);
                     if (Expired(remaining)) break;
 
                     var scan = ScanNext(selector, selected, keepAllEvents, ref cursor, out var message, out var category, out var arrival);
                     if (scan == Scan.Skipped) continue;
                     if (scan == Scan.Exhausted)
                     {
-                        if (!WaitForArrival(arrival!, remaining, ct)) break;
+                        if (!await WaitForArrival(sync, arrival!, remaining, ct)) break;
                         continue;
                     }
 
@@ -321,13 +388,14 @@ public sealed class BgapiEventQueue
         Taken,
         /// <summary>The event stays for other waiters — the selector ignored it, or another waiter took it first.</summary>
         Skipped,
-        /// <summary>Nothing past the cursor is left to examine; <c>arrival</c> is the ticket to wait on.</summary>
+        /// <summary>Nothing past the cursor, arrived by <c>arrivedBy</c>, is left to examine; <c>arrival</c> is the ticket to wait on.</summary>
         Exhausted,
     }
 
     /// <summary>
     /// Examines the one queued event past <paramref name="cursor"/>, advancing the cursor past it.
     /// One candidate per call, so the caller can check its deadline and token between candidates.
+    /// An event enqueued after the Stopwatch timestamp <paramref name="arrivedBy"/> is not examined.
     /// </summary>
     private Scan ScanNext(
         EventSelector selector,
@@ -336,13 +404,14 @@ public sealed class BgapiEventQueue
         ref long cursor,
         out BgapiMessage? message,
         out EventCategory category,
-        out TaskCompletionSource<bool>? arrival)
+        out TaskCompletionSource<bool>? arrival,
+        long arrivedBy = long.MaxValue)
     {
         QueuedEvent candidate;
         lock (_gate)
         {
             int i = IndexOfFirstAfter(cursor);
-            if (i >= _events.Count)
+            if (i >= _events.Count || _events[i].ArrivedAt > arrivedBy)
             {
                 message = null;
                 category = EventCategory.Ignore;
@@ -399,17 +468,33 @@ public sealed class BgapiEventQueue
     }
 
     /// <summary>
-    /// Blocks until the ticket completes (an event was enqueued), the remaining time runs out
+    /// Waits until the ticket completes (an event was enqueued), the remaining time runs out
     /// (returns false), or <paramref name="ct"/> is cancelled (throws OperationCanceledException).
-    /// <see cref="Timeout.InfiniteTimeSpan"/> waits without a bound.
+    /// <see cref="Timeout.InfiniteTimeSpan"/> waits without a bound. With <paramref name="sync"/>
+    /// it blocks the calling thread and completes synchronously; otherwise it awaits.
     /// </summary>
-    private bool WaitForArrival(TaskCompletionSource<bool> arrival, TimeSpan remaining, CancellationToken ct)
+    private async ValueTask<bool> WaitForArrival(bool sync, TaskCompletionSource<bool> arrival, TimeSpan remaining, CancellationToken ct)
     {
         var ms = remaining == Timeout.InfiniteTimeSpan
             ? Timeout.Infinite
             : (int)Math.Min(int.MaxValue, Math.Ceiling(remaining.TotalMilliseconds));
         BeforeArrival?.Invoke();
-        var signaled = arrival.Task.Wait(ms, ct);
+        bool signaled;
+        if (sync)
+        {
+            signaled = arrival.Task.Wait(ms, ct);
+        }
+        else
+        {
+            // WaitAsync reports a window that ran out by throwing TimeoutException, so every wait
+            // that finds nothing would end in one — a receive loop polling on a short timeout would
+            // throw and catch one per poll. Suppressed here, the outcome is read off the ticket, and
+            // cancellation is rethrown as the same OperationCanceledException the blocking wait throws.
+            await ((Task)arrival.Task.WaitAsync(TimeSpan.FromMilliseconds(ms), ct))
+                .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing | ConfigureAwaitOptions.ContinueOnCapturedContext);
+            ct.ThrowIfCancellationRequested();
+            signaled = arrival.Task.IsCompleted;
+        }
         if (signaled) AfterArrival?.Invoke();
         return signaled;
     }
@@ -422,10 +507,16 @@ public sealed class BgapiEventQueue
         return a < b ? a : b;
     }
 
-    private static TimeSpan Remaining(TimeSpan budget, Stopwatch clock) =>
-        budget == Timeout.InfiniteTimeSpan ? budget : budget - clock.Elapsed;
+    /// <summary>
+    /// Time left of <paramref name="budget"/>, never below zero: an overrun of exactly 1 ms would
+    /// otherwise equal <see cref="Timeout.InfiniteTimeSpan"/> and read as no bound at all.
+    /// </summary>
+    internal static TimeSpan Remaining(TimeSpan budget, TimeSpan elapsed) =>
+        budget == Timeout.InfiniteTimeSpan ? budget
+            : elapsed >= budget ? TimeSpan.Zero
+            : budget - elapsed;
 
-    private static bool Expired(TimeSpan remaining) =>
+    internal static bool Expired(TimeSpan remaining) =>
         remaining != Timeout.InfiniteTimeSpan && remaining <= TimeSpan.Zero;
 
     /// <summary>
@@ -495,7 +586,8 @@ public sealed class BgapiEventQueue
                             prevSelEvtCount = selectedEvents.Count;
                             try
                             {
-                                selectedEvents = WaitEvents(
+                                selectedEvents = await WaitEventsCore(
+                                    sync: false,
                                     counted,
                                     eventSelector!,
                                     retryParams.RetryCmdInterval,
@@ -570,7 +662,8 @@ public sealed class BgapiEventQueue
                 prevSelEvtCount = selectedEvents.Count;
                 try
                 {
-                    selectedEvents = WaitEvents(
+                    selectedEvents = await WaitEventsCore(
+                        sync: false,
                         counted,
                         eventSelector!,
                         retryParams.RetryInterval,

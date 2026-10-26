@@ -277,6 +277,36 @@ public class BgapiEventQueueTests
         sw.Elapsed.Should().BeLessThan(Prompt, "the soft window ends the wait, not the hard count");
     }
 
+    // -1 ms is also Timeout.InfiniteTimeSpan. A wait overrun by exactly 1 ms — a late wake, a slow
+    // selector — read as having no bound and waited for the next event, forever on a quiet bus.
+    [Fact]
+    public void Remaining_OneMillisecondPastTheBound_IsExpired()
+    {
+        var remaining = BgapiEventQueue.Remaining(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(101));
+
+        BgapiEventQueue.Expired(remaining).Should().BeTrue();
+    }
+
+    // A waiter paused between its deadline check and its wait finds its ticket already completed,
+    // by an event that came after the deadline. A completed ticket is not an arrival in time.
+    [Fact]
+    public void WaitEvents_PausedBeforeItsWait_LeavesAnEventThatArrivedAfterTheDeadline()
+    {
+        var queue = new BgapiEventQueue();
+        var late = Event(VendorEvent);
+        queue.BeforeArrival = () =>
+        {
+            queue.BeforeArrival = null;
+            Thread.Sleep(Short * 2);
+            queue.Enqueue(late);
+        };
+
+        var act = () => queue.WaitEvents(Select(VendorEvent), Short, maxTime: Short);
+
+        act.Should().Throw<BgapiWaitEventException>();
+        queue.GetEvent(TimeSpan.Zero).Should().BeSameAs(late);
+    }
+
     // The list used to keep a set of the events it had counted, for RetryUntilAsync to take back
     // the count of one it dropped. A caller reusing one list across waits, clearing it between
     // them, kept every earlier event alive through that set.

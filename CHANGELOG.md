@@ -12,6 +12,7 @@ First stable release. From here the public API follows Semantic Versioning: brea
 ### Added
 
 - `BgapiDevice.FindPorts()` and `BgapiDevice.DroppedByteCount`, the two `BgapiConnector` members worth keeping public.
+- The `Subscribe` handler contract is documented. Handlers run in order on the device's only reader thread, and nothing is read off the port until a handler returns. A synchronous `SendCommand` from a handler returns `SlStatus.Timeout`, because its response cannot be read until the handler returns. Only `no_return` commands return `OK`. Calling a blocking method from a handler is unsupported; hand the work to another thread. The behaviour itself is unchanged.
 
 ### Changed
 

@@ -35,15 +35,16 @@ The released-baseline comparison compiles `scripts/PublicMeasurements.cs` unchan
 against each actual nupkg. It compares the common public codec, queue and subscription
 registration paths. It cannot compare the old binary through new internal seams.
 
-Tests tagged `KnownLimitation` **confirm failures**, not release acceptance. They
-currently reproduce inline callback blocking only: a slow subscriber, or one that
-sends a command synchronously, holds the only reader. Same-header response
-ambiguity, concurrent opens, old-reader dispatch after reopen, dispose during a
-pending command and the unobserved late read fault after final close were repaired;
-their reproductions now assert the repaired contract.
-Passing these tests does not authorize release. Repair or explicit accepted operating
-restrictions, performance budgets, Raspberry Pi evidence and the existing soak gate
-are still required.
+No test is tagged `KnownLimitation` any more. Same-header response ambiguity,
+concurrent opens, old-reader dispatch after reopen, dispose during a pending command
+and the unobserved late read fault after final close were repaired, and their
+reproductions now assert the repaired contract. Inline callback blocking (a slow
+subscriber, or one that sends a command synchronously, holds the only reader) is
+accepted as the documented `Subscribe` contract. Its reproductions now pin that
+contract, together with the offload pattern the docs give and `Close` called from a
+callback.
+Passing these tests does not authorize release. Performance budgets, Raspberry Pi
+evidence and the existing soak gate are still required.
 
 `scripts/HardwareObservation.cs` is an opt-in public-API observer to compile against
 the candidate nupkg on Debian. Its required arguments record the user's port, baud,
